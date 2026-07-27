@@ -3,8 +3,9 @@
 ESPHome configuration for the Fusion Energy / SEM Meter W338 clone using an
 ESP32-S3-WROOM-1U module and AT32F421 metering MCU.
 
-This project preserves the working UART accumulator parser for this hardware.
-The meter sends one complete measurement cycle as three UART chunks:
+This project preserves the working UART accumulator behavior in a reusable,
+scheduler-safe local ESPHome component. The meter sends one complete
+measurement cycle as three UART transport chunks:
 
 - 150 bytes
 - 150 bytes
@@ -13,6 +14,38 @@ The meter sends one complete measurement cycle as three UART chunks:
 
 The parser accepts records beginning with either `0xFF` or `0x3B`. It does not
 use a newline delimiter and does not use the older `bytes: 400` parser pattern.
+Transport chunks are accumulated as a continuous byte stream; they are not
+parsed independently.
+
+## Local Component
+
+The UART accumulation and record decoding live outside the YAML:
+
+```text
+components/
+└── sem_meter/
+    ├── __init__.py
+    ├── sem_meter_accumulator.h
+    ├── sem_meter_parser.h
+    ├── sem_meter.h
+    └── sem_meter.cpp
+```
+
+The component uses a fixed-capacity receive buffer and preserves partial
+records between ESPHome loop calls. Each loop reads at most 128 UART bytes and
+decodes at most one 447-byte frame before returning control to ESPHome. This
+keeps Wi-Fi, API, OTA, web server, and watchdog servicing responsive.
+
+Calibration remains configurable in `sem-meter.yaml`:
+
+```yaml
+sem_meter:
+  id: sem_meter_parser
+  uart_id: meter_uart
+  branch_power_divisor: 95.0
+  main_power_divisor: 102.0
+  voltage_divisor: 10.30
+```
 
 ## Features
 
@@ -54,6 +87,24 @@ use a newline delimiter and does not use the older `bytes: 400` parser pattern.
    ```
 
 5. Flash over serial or OTA. See [docs/flashing.md](docs/flashing.md).
+
+## Troubleshooting
+
+### Phase B is missing
+
+Phase B records may use the secondary `0x3B` marker. A parser that accepts only
+`0xFF` records commonly loses Phase B.
+
+### Some records are missing
+
+The 150/150/147-byte UART chunks are transport boundaries, not record
+boundaries. Parsing each chunk independently can discard a record split across
+two chunks.
+
+### Wi-Fi is weak or unavailable
+
+The ESP32-S3-WROOM-1U module used by this meter requires an external antenna.
+Confirm that a compatible antenna is securely connected.
 
 ## Documentation
 

@@ -10,6 +10,9 @@ firmware*.*
 
 # Local secrets and private backups
 secrets.yaml
+parser_replay_test.obj
+tests/parser_replay_test.exe
+vc140.pdb
 backups/*
 !backups/README.md
 *.backup

@@ -12,20 +12,45 @@ The AT32F421 metering MCU sends measurements to the ESP32-S3 over UART.
 
 ## Cycle Framing
 
-A complete measurement cycle is 447 bytes. It arrives as three chunks:
+A complete measurement cycle is 447 bytes. It is transported as three chunks:
 
 - 150 bytes
 - 150 bytes
 - 147 bytes
 
-The working ESPHome parser accumulates incoming UART debug bytes until at least
-447 bytes are available, scans the accumulated cycle for records, then clears
-the accumulator.
+The chunk boundaries are transport boundaries, not record boundaries. Records
+can cross from one chunk into the next, so the 150, 150, and 147-byte chunks
+must not be parsed independently.
+
+The local component treats UART input as a continuous stream and preserves
+partial data between ESPHome loop calls. Scheduler work is strictly bounded:
+
+- At most 128 UART bytes are read per loop call.
+- At most one complete 447-byte frame is decoded per loop call.
+- The receive buffer has a fixed 894-byte capacity.
+- A 22-byte overlap is retained when consuming a frame so a split record can
+  be completed on a later call.
+
+If synchronization is lost and the fixed buffer fills, the oldest bytes are
+dropped with a warning. The component does not allocate memory continuously in
+its loop.
 
 Do not replace this with a newline delimiter parser. Do not use the older
 `bytes: 400` parser.
 
-## Record Markers
+## Record Layout
+
+Every record begins with a marker, followed by its record ID and payload. The
+payload pointer `r` begins at the status byte:
+
+| Record byte | Meaning |
+| --- | --- |
+| Byte 0 | Marker (`0xFF` or `0x3B`) |
+| Byte 1 | Record ID |
+| Byte 2 / `r[0]` | Status |
+| `r[4..5]` | Voltage, big-endian `uint16_t` |
+| `r[12..15]` | Power, big-endian `uint32_t` |
+| `r[20]` | Frequency in Hz |
 
 Records may begin with either marker:
 
