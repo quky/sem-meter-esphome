@@ -1,0 +1,6 @@
+substitutions:
+  device_name: sem-meter
+  friendly_name: SEM Meter
+
+packages:
+  sem_meter: !include ../sem-meter.yaml

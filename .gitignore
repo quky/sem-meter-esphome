@@ -1,0 +1,27 @@
+# ESPHome local state and build output
+.esphome/
+build/
+*.bin
+*.elf
+*.map
+*.ota.bin
+*.factory.bin
+firmware*.*
+
+# Local secrets and private backups
+secrets.yaml
+backups/*
+!backups/README.md
+*.backup
+*.backup-*
+*.bak
+*factory-backup*
+*firmware-backup*
+*.img
+
+# Editor and OS noise
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini

@@ -1,0 +1,806 @@
+substitutions:
+  circuit_1_name: laundry
+  circuit_2_name: kitchen cooking
+  circuit_3_name: master bedroom
+  circuit_4_name: welder plug
+  circuit_5_name: generator plug
+  circuit_6_name: microwave
+  circuit_7_name: air handler
+  circuit_8_name: circuit 8
+  circuit_9_name: circuit 9
+  circuit_10_name: pool pump
+  circuit_11_name: master bedroom light
+  circuit_12_name: lights Ely mami bathroom
+  circuit_13_name: "A\u2044C"
+  circuit_14_name: lights garage laundry kitchen
+  circuit_15_name: receptacle below panel
+  circuit_16_name: TP Link power strip
+
+esphome:
+  name: sem-meter
+  friendly_name: SEM Meter
+
+esp32:
+  variant: esp32s3
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+
+logger:
+  level: INFO
+  tx_buffer_size: 2048
+  logs:
+    sensor: WARN
+
+api:
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  ap:
+    ssid: "SEM Meter Fallback"
+    password: "semmeter123"
+
+captive_portal:
+
+web_server:
+  port: 80
+
+button:
+  - platform: restart
+    name: "Restart SEM Meter"
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: "IP Address"
+    ssid:
+      name: "Connected SSID"
+    mac_address:
+      name: "MAC Address"
+
+time:
+  - platform: sntp
+    id: sntp_time
+
+# Values decoded from the AT32 metering processor.
+globals:
+  - id: raw_w
+    type: float[16]
+    restore_value: no
+
+  - id: raw_pa
+    type: float
+    restore_value: no
+    initial_value: "0.0"
+
+  - id: raw_pb
+    type: float
+    restore_value: no
+    initial_value: "0.0"
+
+  - id: raw_pc
+    type: float
+    restore_value: no
+    initial_value: "0.0"
+
+  - id: line_v_a
+    type: float
+    restore_value: no
+    initial_value: "0.0"
+
+  - id: line_v_b
+    type: float
+    restore_value: no
+    initial_value: "0.0"
+
+  - id: line_hz
+    type: float
+    restore_value: no
+    initial_value: "0.0"
+
+uart:
+  id: meter_uart
+  rx_pin: GPIO39
+  baud_rate: 115200
+  data_bits: 8
+  parity: NONE
+  stop_bits: 1
+  rx_buffer_size: 1024
+
+  debug:
+    direction: RX
+    dummy_receiver: true
+    after:
+      timeout: 250ms
+    sequence:
+      - lambda: |-
+          static std::vector<uint8_t> accumulated;
+
+          accumulated.insert(
+              accumulated.end(),
+              bytes.begin(),
+              bytes.end()
+          );
+
+          if (accumulated.size() < 447) {
+            return;
+          }
+
+          const auto &b = accumulated;
+          const int n = static_cast<int>(b.size());
+
+          for (int i = 0; i + 22 < n; i++) {
+            // This meter uses both FF and 3B as record markers.
+            if (b[i] != 0xFF && b[i] != 0x3B) {
+              continue;
+            }
+
+            const uint8_t record = b[i + 1];
+
+            if (record > 0x12) {
+              continue;
+            }
+
+            const uint8_t status = b[i + 2];
+
+            if (status != 0x01 &&
+                status != 0x03 &&
+                status != 0x07) {
+              continue;
+            }
+
+            const uint8_t *r = &b[i + 2];
+
+            const uint32_t raw_power =
+                (static_cast<uint32_t>(r[12]) << 24) |
+                (static_cast<uint32_t>(r[13]) << 16) |
+                (static_cast<uint32_t>(r[14]) << 8) |
+                static_cast<uint32_t>(r[15]);
+
+            const uint16_t raw_voltage =
+                (static_cast<uint16_t>(r[4]) << 8) |
+                static_cast<uint16_t>(r[5]);
+
+            if (status == 0x01) {
+              if (record <= 0x0F) {
+                id(raw_w)[record] = 0.0f;
+              } else if (record == 0x10) {
+                id(raw_pa) = 0.0f;
+              } else if (record == 0x11) {
+                id(raw_pb) = 0.0f;
+              } else if (record == 0x12) {
+                id(raw_pc) = 0.0f;
+              }
+
+              continue;
+            }
+
+            if (record <= 0x0F) {
+              id(raw_w)[record] = raw_power / 95.0f;
+
+            } else if (record == 0x10) {
+              id(raw_pa) = raw_power / 102.0f;
+
+              if (raw_voltage > 900) {
+                id(line_v_a) = raw_voltage / 10.30f;
+                id(line_hz) = static_cast<float>(r[20]);
+              }
+
+            } else if (record == 0x11) {
+              id(raw_pb) = raw_power / 102.0f;
+
+              if (raw_voltage > 900) {
+                id(line_v_b) = raw_voltage / 10.30f;
+              }
+
+            } else if (record == 0x12) {
+              id(raw_pc) = raw_power / 102.0f;
+            }
+          }
+
+          accumulated.clear();
+
+switch:
+  - platform: template
+    name: "${circuit_1_name} Enabled"
+    id: circuit_1_enabled
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+  - platform: template
+    name: "${circuit_1_name} 240V Multiplier"
+    id: circuit_1_240v_multiplier
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+  - platform: template
+    name: "${circuit_2_name} Enabled"
+    id: circuit_2_enabled
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+  - platform: template
+    name: "${circuit_2_name} 240V Multiplier"
+    id: circuit_2_240v_multiplier
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+  - platform: template
+    name: "${circuit_3_name} Enabled"
+    id: circuit_3_enabled
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+  - platform: template
+    name: "${circuit_3_name} 240V Multiplier"
+    id: circuit_3_240v_multiplier
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+  - platform: template
+    name: "${circuit_4_name} Enabled"
+    id: circuit_4_enabled
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+  - platform: template
+    name: "${circuit_4_name} 240V Multiplier"
+    id: circuit_4_240v_multiplier
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+  - platform: template
+    name: "${circuit_5_name} Enabled"
+    id: circuit_5_enabled
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+  - platform: template
+    name: "${circuit_5_name} 240V Multiplier"
+    id: circuit_5_240v_multiplier
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+  - platform: template
+    name: "${circuit_6_name} Enabled"
+    id: circuit_6_enabled
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+  - platform: template
+    name: "${circuit_6_name} 240V Multiplier"
+    id: circuit_6_240v_multiplier
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+  - platform: template
+    name: "${circuit_7_name} Enabled"
+    id: circuit_7_enabled
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+  - platform: template
+    name: "${circuit_7_name} 240V Multiplier"
+    id: circuit_7_240v_multiplier
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+  - platform: template
+    name: "${circuit_8_name} Enabled"
+    id: circuit_8_enabled
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+  - platform: template
+    name: "${circuit_8_name} 240V Multiplier"
+    id: circuit_8_240v_multiplier
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+  - platform: template
+    name: "${circuit_9_name} Enabled"
+    id: circuit_9_enabled
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+  - platform: template
+    name: "${circuit_9_name} 240V Multiplier"
+    id: circuit_9_240v_multiplier
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+  - platform: template
+    name: "${circuit_10_name} Enabled"
+    id: circuit_10_enabled
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+  - platform: template
+    name: "${circuit_10_name} 240V Multiplier"
+    id: circuit_10_240v_multiplier
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+  - platform: template
+    name: "${circuit_11_name} Enabled"
+    id: circuit_11_enabled
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+  - platform: template
+    name: "${circuit_11_name} 240V Multiplier"
+    id: circuit_11_240v_multiplier
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+  - platform: template
+    name: "${circuit_12_name} Enabled"
+    id: circuit_12_enabled
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+  - platform: template
+    name: "${circuit_12_name} 240V Multiplier"
+    id: circuit_12_240v_multiplier
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+  - platform: template
+    name: "${circuit_13_name} Enabled"
+    id: circuit_13_enabled
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+  - platform: template
+    name: "${circuit_13_name} 240V Multiplier"
+    id: circuit_13_240v_multiplier
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+  - platform: template
+    name: "${circuit_14_name} Enabled"
+    id: circuit_14_enabled
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+  - platform: template
+    name: "${circuit_14_name} 240V Multiplier"
+    id: circuit_14_240v_multiplier
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+  - platform: template
+    name: "${circuit_15_name} Enabled"
+    id: circuit_15_enabled
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+  - platform: template
+    name: "${circuit_15_name} 240V Multiplier"
+    id: circuit_15_240v_multiplier
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+  - platform: template
+    name: "${circuit_16_name} Enabled"
+    id: circuit_16_enabled
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+  - platform: template
+    name: "${circuit_16_name} 240V Multiplier"
+    id: circuit_16_240v_multiplier
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+
+sensor:
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    update_interval: 30s
+
+  - platform: uptime
+    name: "Uptime"
+
+  - platform: template
+    name: "Phase A Voltage"
+    id: phase_a_voltage
+    update_interval: 5s
+    unit_of_measurement: "V"
+    accuracy_decimals: 1
+    device_class: voltage
+    state_class: measurement
+    lambda: |-
+      return id(line_v_a);
+
+  - platform: template
+    name: "Phase B Voltage"
+    id: phase_b_voltage
+    update_interval: 5s
+    unit_of_measurement: "V"
+    accuracy_decimals: 1
+    device_class: voltage
+    state_class: measurement
+    lambda: |-
+      return id(line_v_b);
+
+  - platform: template
+    name: "Line Frequency"
+    id: line_frequency
+    update_interval: 5s
+    unit_of_measurement: "Hz"
+    accuracy_decimals: 0
+    device_class: frequency
+    state_class: measurement
+    lambda: |-
+      return id(line_hz);
+
+  - platform: template
+    name: "Main Phase A Power"
+    id: main_phase_a_power
+    update_interval: 5s
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    device_class: power
+    state_class: measurement
+    lambda: |-
+      return id(raw_pa);
+
+  - platform: template
+    name: "Main Phase B Power"
+    id: main_phase_b_power
+    update_interval: 5s
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    device_class: power
+    state_class: measurement
+    lambda: |-
+      return id(raw_pb);
+
+  - platform: template
+    name: "Main Phase C Power"
+    id: main_phase_c_power
+    update_interval: 5s
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    device_class: power
+    state_class: measurement
+    lambda: |-
+      return id(raw_pc);
+
+  - platform: template
+    name: "Total Main Power"
+    id: total_main_power
+    update_interval: 5s
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    device_class: power
+    state_class: measurement
+    lambda: |-
+      return id(raw_pa) + id(raw_pb) + id(raw_pc);
+
+  - platform: template
+    name: "${circuit_1_name} Power"
+    id: circuit_1_power
+    update_interval: 5s
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    device_class: power
+    state_class: measurement
+    lambda: |-
+      if (!id(circuit_1_enabled).state) return 0.0f;
+      return id(raw_w)[0] * (id(circuit_1_240v_multiplier).state ? 2.0f : 1.0f);
+  - platform: template
+    name: "${circuit_2_name} Power"
+    id: circuit_2_power
+    update_interval: 5s
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    device_class: power
+    state_class: measurement
+    lambda: |-
+      if (!id(circuit_2_enabled).state) return 0.0f;
+      return id(raw_w)[1] * (id(circuit_2_240v_multiplier).state ? 2.0f : 1.0f);
+  - platform: template
+    name: "${circuit_3_name} Power"
+    id: circuit_3_power
+    update_interval: 5s
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    device_class: power
+    state_class: measurement
+    lambda: |-
+      if (!id(circuit_3_enabled).state) return 0.0f;
+      return id(raw_w)[2] * (id(circuit_3_240v_multiplier).state ? 2.0f : 1.0f);
+  - platform: template
+    name: "${circuit_4_name} Power"
+    id: circuit_4_power
+    update_interval: 5s
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    device_class: power
+    state_class: measurement
+    lambda: |-
+      if (!id(circuit_4_enabled).state) return 0.0f;
+      return id(raw_w)[3] * (id(circuit_4_240v_multiplier).state ? 2.0f : 1.0f);
+  - platform: template
+    name: "${circuit_5_name} Power"
+    id: circuit_5_power
+    update_interval: 5s
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    device_class: power
+    state_class: measurement
+    lambda: |-
+      if (!id(circuit_5_enabled).state) return 0.0f;
+      return id(raw_w)[4] * (id(circuit_5_240v_multiplier).state ? 2.0f : 1.0f);
+  - platform: template
+    name: "${circuit_6_name} Power"
+    id: circuit_6_power
+    update_interval: 5s
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    device_class: power
+    state_class: measurement
+    lambda: |-
+      if (!id(circuit_6_enabled).state) return 0.0f;
+      return id(raw_w)[5] * (id(circuit_6_240v_multiplier).state ? 2.0f : 1.0f);
+  - platform: template
+    name: "${circuit_7_name} Power"
+    id: circuit_7_power
+    update_interval: 5s
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    device_class: power
+    state_class: measurement
+    lambda: |-
+      if (!id(circuit_7_enabled).state) return 0.0f;
+      return id(raw_w)[6] * (id(circuit_7_240v_multiplier).state ? 2.0f : 1.0f);
+  - platform: template
+    name: "${circuit_8_name} Power"
+    id: circuit_8_power
+    update_interval: 5s
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    device_class: power
+    state_class: measurement
+    lambda: |-
+      if (!id(circuit_8_enabled).state) return 0.0f;
+      return id(raw_w)[7] * (id(circuit_8_240v_multiplier).state ? 2.0f : 1.0f);
+  - platform: template
+    name: "${circuit_9_name} Power"
+    id: circuit_9_power
+    update_interval: 5s
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    device_class: power
+    state_class: measurement
+    lambda: |-
+      if (!id(circuit_9_enabled).state) return 0.0f;
+      return id(raw_w)[8] * (id(circuit_9_240v_multiplier).state ? 2.0f : 1.0f);
+  - platform: template
+    name: "${circuit_10_name} Power"
+    id: circuit_10_power
+    update_interval: 5s
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    device_class: power
+    state_class: measurement
+    lambda: |-
+      if (!id(circuit_10_enabled).state) return 0.0f;
+      return id(raw_w)[9] * (id(circuit_10_240v_multiplier).state ? 2.0f : 1.0f);
+  - platform: template
+    name: "${circuit_11_name} Power"
+    id: circuit_11_power
+    update_interval: 5s
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    device_class: power
+    state_class: measurement
+    lambda: |-
+      if (!id(circuit_11_enabled).state) return 0.0f;
+      return id(raw_w)[10] * (id(circuit_11_240v_multiplier).state ? 2.0f : 1.0f);
+  - platform: template
+    name: "${circuit_12_name} Power"
+    id: circuit_12_power
+    update_interval: 5s
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    device_class: power
+    state_class: measurement
+    lambda: |-
+      if (!id(circuit_12_enabled).state) return 0.0f;
+      return id(raw_w)[11] * (id(circuit_12_240v_multiplier).state ? 2.0f : 1.0f);
+  - platform: template
+    name: "${circuit_13_name} Power"
+    id: circuit_13_power
+    update_interval: 5s
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    device_class: power
+    state_class: measurement
+    lambda: |-
+      if (!id(circuit_13_enabled).state) return 0.0f;
+      return id(raw_w)[12] * (id(circuit_13_240v_multiplier).state ? 2.0f : 1.0f);
+  - platform: template
+    name: "${circuit_14_name} Power"
+    id: circuit_14_power
+    update_interval: 5s
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    device_class: power
+    state_class: measurement
+    lambda: |-
+      if (!id(circuit_14_enabled).state) return 0.0f;
+      return id(raw_w)[13] * (id(circuit_14_240v_multiplier).state ? 2.0f : 1.0f);
+  - platform: template
+    name: "${circuit_15_name} Power"
+    id: circuit_15_power
+    update_interval: 5s
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    device_class: power
+    state_class: measurement
+    lambda: |-
+      if (!id(circuit_15_enabled).state) return 0.0f;
+      return id(raw_w)[14] * (id(circuit_15_240v_multiplier).state ? 2.0f : 1.0f);
+  - platform: template
+    name: "${circuit_16_name} Power"
+    id: circuit_16_power
+    update_interval: 5s
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    device_class: power
+    state_class: measurement
+    lambda: |-
+      if (!id(circuit_16_enabled).state) return 0.0f;
+      return id(raw_w)[15] * (id(circuit_16_240v_multiplier).state ? 2.0f : 1.0f);
+
+  - platform: template
+    name: "Balance Power"
+    id: balance_power
+    update_interval: 5s
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    device_class: power
+    state_class: measurement
+    lambda: |-
+      const float branches =
+          id(circuit_1_power).state + id(circuit_2_power).state +
+          id(circuit_3_power).state + id(circuit_4_power).state +
+          id(circuit_5_power).state + id(circuit_6_power).state +
+          id(circuit_7_power).state + id(circuit_8_power).state +
+          id(circuit_9_power).state + id(circuit_10_power).state +
+          id(circuit_11_power).state + id(circuit_12_power).state +
+          id(circuit_13_power).state + id(circuit_14_power).state +
+          id(circuit_15_power).state + id(circuit_16_power).state;
+      const float balance = id(total_main_power).state - branches;
+      return balance > 0.0f ? balance : 0.0f;
+
+  - platform: total_daily_energy
+    name: "${circuit_1_name} Daily Energy"
+    power_id: circuit_1_power
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+    filters:
+      - multiply: 0.001
+  - platform: total_daily_energy
+    name: "${circuit_2_name} Daily Energy"
+    power_id: circuit_2_power
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+    filters:
+      - multiply: 0.001
+  - platform: total_daily_energy
+    name: "${circuit_3_name} Daily Energy"
+    power_id: circuit_3_power
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+    filters:
+      - multiply: 0.001
+  - platform: total_daily_energy
+    name: "${circuit_4_name} Daily Energy"
+    power_id: circuit_4_power
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+    filters:
+      - multiply: 0.001
+  - platform: total_daily_energy
+    name: "${circuit_5_name} Daily Energy"
+    power_id: circuit_5_power
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+    filters:
+      - multiply: 0.001
+  - platform: total_daily_energy
+    name: "${circuit_6_name} Daily Energy"
+    power_id: circuit_6_power
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+    filters:
+      - multiply: 0.001
+  - platform: total_daily_energy
+    name: "${circuit_7_name} Daily Energy"
+    power_id: circuit_7_power
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+    filters:
+      - multiply: 0.001
+  - platform: total_daily_energy
+    name: "${circuit_8_name} Daily Energy"
+    power_id: circuit_8_power
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+    filters:
+      - multiply: 0.001
+  - platform: total_daily_energy
+    name: "${circuit_9_name} Daily Energy"
+    power_id: circuit_9_power
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+    filters:
+      - multiply: 0.001
+  - platform: total_daily_energy
+    name: "${circuit_10_name} Daily Energy"
+    power_id: circuit_10_power
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+    filters:
+      - multiply: 0.001
+  - platform: total_daily_energy
+    name: "${circuit_11_name} Daily Energy"
+    power_id: circuit_11_power
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+    filters:
+      - multiply: 0.001
+  - platform: total_daily_energy
+    name: "${circuit_12_name} Daily Energy"
+    power_id: circuit_12_power
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+    filters:
+      - multiply: 0.001
+  - platform: total_daily_energy
+    name: "${circuit_13_name} Daily Energy"
+    power_id: circuit_13_power
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+    filters:
+      - multiply: 0.001
+  - platform: total_daily_energy
+    name: "${circuit_14_name} Daily Energy"
+    power_id: circuit_14_power
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+    filters:
+      - multiply: 0.001
+  - platform: total_daily_energy
+    name: "${circuit_15_name} Daily Energy"
+    power_id: circuit_15_power
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+    filters:
+      - multiply: 0.001
+  - platform: total_daily_energy
+    name: "${circuit_16_name} Daily Energy"
+    power_id: circuit_16_power
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+    filters:
+      - multiply: 0.001
+
+  - platform: total_daily_energy
+    name: "Total Daily Energy"
+    power_id: total_main_power
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+    filters:
+      - multiply: 0.001
