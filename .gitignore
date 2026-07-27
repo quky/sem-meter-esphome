@@ -28,3 +28,14 @@ backups/*
 *.swp
 Thumbs.db
 Desktop.ini
+
+# Python
+__pycache__/
+*.pyc
+
+# Visual Studio
+*.pdb
+
+# ESPHome
+.esphome/
+
