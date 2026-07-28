@@ -25,6 +25,42 @@ tasks.
 - Host-side captured-frame, recovery, diagnostics, and AddressSanitizer tests
 - Internal bounded event interface ready for future notification listeners
 
+## Home Assistant diagnostics
+
+The component exposes a deliberately small diagnostic set. `SEM Meter Healthy`,
+`UART Healthy`, `Component State`, and `Last Event` are enabled by default.
+Advanced numeric diagnostics—milliseconds since the last valid frame, frames
+processed, malformed frames, buffer recoveries, and event count—are disabled
+by default and update every five seconds.
+
+Health, state, and last-event entities publish immediately when a real state or
+event transition occurs. The YAML does not duplicate parser or timeout logic.
+
+## Sensor value validation
+
+Every voltage, frequency, circuit-power, main-power, total-power, and balance
+sample passes through a shared validation filter immediately before Home
+Assistant publication. The initial absolute ranges are 70–150 V for phase
+voltage, 40–70 Hz for frequency, 0–50 kW per circuit, 0–100 kW per main phase,
+and 0–200 kW for total and balance power. Balance remains non-negative, matching
+its existing clamped behavior.
+
+The validator also compares each sample with its last accepted value. Maximum
+one-sample changes are 40 V, 10 Hz, 20 kW per circuit, 50 kW per main phase, and
+100 kW for total or balance power. A valid zero always passes the power jump
+check so idle records retain their established zero-reset behavior.
+
+Rejected samples are dropped from the filter chain, leaving Home Assistant and
+daily-energy integration on the last good value. `Last Rejected Sensor` and
+`Last Rejection Reason` are enabled diagnostic text sensors. `Last Rejected
+Value` and `Rejected Samples` are available but disabled by default.
+
+Validation begins independently for each measurement only after its UART record
+has been decoded. Startup placeholder values therefore remain unavailable and
+do not count as rejected samples. Before the first real rejection, the rejected
+sample count is `0`, the rejected sensor and reason are `NONE`, and `Last
+Rejected Value` remains unavailable rather than publishing a fabricated zero.
+
 ## Supported hardware
 
 | Item | Supported configuration |
@@ -52,7 +88,9 @@ before connecting a programmer.
 │       ├── sem_meter.h
 │       ├── sem_meter_accumulator.h
 │       ├── sem_meter_diagnostics.h
-│       └── sem_meter_parser.h
+│       ├── sem_meter_parser.h
+│       ├── sem_meter_validator.cpp
+│       └── sem_meter_validator.h
 ├── docs/
 │   ├── development.md
 │   ├── flashing.md

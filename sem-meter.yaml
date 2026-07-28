@@ -85,6 +85,45 @@ sem_meter:
   branch_power_divisor: 95.0
   main_power_divisor: 102.0
   voltage_divisor: 10.30
+  sem_meter_healthy:
+    name: "SEM Meter Healthy"
+    disabled_by_default: false
+  uart_healthy:
+    name: "UART Healthy"
+    disabled_by_default: false
+  component_state:
+    name: "Component State"
+    disabled_by_default: false
+  last_event:
+    name: "Last Event"
+    disabled_by_default: false
+  milliseconds_since_last_frame:
+    name: "Milliseconds Since Last Frame"
+    disabled_by_default: true
+  frames_processed:
+    name: "Frames Processed"
+    disabled_by_default: true
+  malformed_frames:
+    name: "Malformed Frames"
+    disabled_by_default: true
+  buffer_recoveries:
+    name: "Buffer Recoveries"
+    disabled_by_default: true
+  event_count:
+    name: "Event Count"
+    disabled_by_default: true
+  last_rejected_sensor:
+    name: "Last Rejected Sensor"
+    disabled_by_default: false
+  last_rejection_reason:
+    name: "Last Rejection Reason"
+    disabled_by_default: false
+  last_rejected_value:
+    name: "Last Rejected Value"
+    disabled_by_default: true
+  rejected_samples:
+    name: "Rejected Samples"
+    disabled_by_default: true
 
 switch:
   - platform: template
@@ -266,6 +305,10 @@ sensor:
     state_class: measurement
     lambda: |-
       return id(sem_meter_parser).get_phase_a_voltage();
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::PHASE_A_VOLTAGE, x);
 
   - platform: template
     name: "Phase B Voltage"
@@ -277,6 +320,10 @@ sensor:
     state_class: measurement
     lambda: |-
       return id(sem_meter_parser).get_phase_b_voltage();
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::PHASE_B_VOLTAGE, x);
 
   - platform: template
     name: "Line Frequency"
@@ -288,6 +335,10 @@ sensor:
     state_class: measurement
     lambda: |-
       return id(sem_meter_parser).get_line_frequency();
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::LINE_FREQUENCY, x);
 
   - platform: template
     name: "Main Phase A Power"
@@ -299,6 +350,10 @@ sensor:
     state_class: measurement
     lambda: |-
       return id(sem_meter_parser).get_phase_a_power();
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::MAIN_PHASE_A_POWER, x);
 
   - platform: template
     name: "Main Phase B Power"
@@ -310,6 +365,10 @@ sensor:
     state_class: measurement
     lambda: |-
       return id(sem_meter_parser).get_phase_b_power();
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::MAIN_PHASE_B_POWER, x);
 
   - platform: template
     name: "Main Phase C Power"
@@ -321,6 +380,10 @@ sensor:
     state_class: measurement
     lambda: |-
       return id(sem_meter_parser).get_phase_c_power();
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::MAIN_PHASE_C_POWER, x);
 
   - platform: template
     name: "Total Main Power"
@@ -334,6 +397,10 @@ sensor:
       return id(sem_meter_parser).get_phase_a_power() +
              id(sem_meter_parser).get_phase_b_power() +
              id(sem_meter_parser).get_phase_c_power();
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::TOTAL_MAIN_POWER, x);
 
   - platform: template
     name: "${circuit_1_name} Power"
@@ -346,6 +413,10 @@ sensor:
     lambda: |-
       if (!id(circuit_1_enabled).state) return 0.0f;
       return id(sem_meter_parser).get_branch_power(0) * (id(circuit_1_240v_multiplier).state ? 2.0f : 1.0f);
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::CIRCUIT_1_POWER, x);
   - platform: template
     name: "${circuit_2_name} Power"
     id: circuit_2_power
@@ -357,6 +428,10 @@ sensor:
     lambda: |-
       if (!id(circuit_2_enabled).state) return 0.0f;
       return id(sem_meter_parser).get_branch_power(1) * (id(circuit_2_240v_multiplier).state ? 2.0f : 1.0f);
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::CIRCUIT_2_POWER, x);
   - platform: template
     name: "${circuit_3_name} Power"
     id: circuit_3_power
@@ -368,6 +443,10 @@ sensor:
     lambda: |-
       if (!id(circuit_3_enabled).state) return 0.0f;
       return id(sem_meter_parser).get_branch_power(2) * (id(circuit_3_240v_multiplier).state ? 2.0f : 1.0f);
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::CIRCUIT_3_POWER, x);
   - platform: template
     name: "${circuit_4_name} Power"
     id: circuit_4_power
@@ -379,6 +458,10 @@ sensor:
     lambda: |-
       if (!id(circuit_4_enabled).state) return 0.0f;
       return id(sem_meter_parser).get_branch_power(3) * (id(circuit_4_240v_multiplier).state ? 2.0f : 1.0f);
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::CIRCUIT_4_POWER, x);
   - platform: template
     name: "${circuit_5_name} Power"
     id: circuit_5_power
@@ -390,6 +473,10 @@ sensor:
     lambda: |-
       if (!id(circuit_5_enabled).state) return 0.0f;
       return id(sem_meter_parser).get_branch_power(4) * (id(circuit_5_240v_multiplier).state ? 2.0f : 1.0f);
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::CIRCUIT_5_POWER, x);
   - platform: template
     name: "${circuit_6_name} Power"
     id: circuit_6_power
@@ -401,6 +488,10 @@ sensor:
     lambda: |-
       if (!id(circuit_6_enabled).state) return 0.0f;
       return id(sem_meter_parser).get_branch_power(5) * (id(circuit_6_240v_multiplier).state ? 2.0f : 1.0f);
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::CIRCUIT_6_POWER, x);
   - platform: template
     name: "${circuit_7_name} Power"
     id: circuit_7_power
@@ -412,6 +503,10 @@ sensor:
     lambda: |-
       if (!id(circuit_7_enabled).state) return 0.0f;
       return id(sem_meter_parser).get_branch_power(6) * (id(circuit_7_240v_multiplier).state ? 2.0f : 1.0f);
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::CIRCUIT_7_POWER, x);
   - platform: template
     name: "${circuit_8_name} Power"
     id: circuit_8_power
@@ -423,6 +518,10 @@ sensor:
     lambda: |-
       if (!id(circuit_8_enabled).state) return 0.0f;
       return id(sem_meter_parser).get_branch_power(7) * (id(circuit_8_240v_multiplier).state ? 2.0f : 1.0f);
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::CIRCUIT_8_POWER, x);
   - platform: template
     name: "${circuit_9_name} Power"
     id: circuit_9_power
@@ -434,6 +533,10 @@ sensor:
     lambda: |-
       if (!id(circuit_9_enabled).state) return 0.0f;
       return id(sem_meter_parser).get_branch_power(8) * (id(circuit_9_240v_multiplier).state ? 2.0f : 1.0f);
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::CIRCUIT_9_POWER, x);
   - platform: template
     name: "${circuit_10_name} Power"
     id: circuit_10_power
@@ -445,6 +548,10 @@ sensor:
     lambda: |-
       if (!id(circuit_10_enabled).state) return 0.0f;
       return id(sem_meter_parser).get_branch_power(9) * (id(circuit_10_240v_multiplier).state ? 2.0f : 1.0f);
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::CIRCUIT_10_POWER, x);
   - platform: template
     name: "${circuit_11_name} Power"
     id: circuit_11_power
@@ -456,6 +563,10 @@ sensor:
     lambda: |-
       if (!id(circuit_11_enabled).state) return 0.0f;
       return id(sem_meter_parser).get_branch_power(10) * (id(circuit_11_240v_multiplier).state ? 2.0f : 1.0f);
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::CIRCUIT_11_POWER, x);
   - platform: template
     name: "${circuit_12_name} Power"
     id: circuit_12_power
@@ -467,6 +578,10 @@ sensor:
     lambda: |-
       if (!id(circuit_12_enabled).state) return 0.0f;
       return id(sem_meter_parser).get_branch_power(11) * (id(circuit_12_240v_multiplier).state ? 2.0f : 1.0f);
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::CIRCUIT_12_POWER, x);
   - platform: template
     name: "${circuit_13_name} Power"
     id: circuit_13_power
@@ -478,6 +593,10 @@ sensor:
     lambda: |-
       if (!id(circuit_13_enabled).state) return 0.0f;
       return id(sem_meter_parser).get_branch_power(12) * (id(circuit_13_240v_multiplier).state ? 2.0f : 1.0f);
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::CIRCUIT_13_POWER, x);
   - platform: template
     name: "${circuit_14_name} Power"
     id: circuit_14_power
@@ -489,6 +608,10 @@ sensor:
     lambda: |-
       if (!id(circuit_14_enabled).state) return 0.0f;
       return id(sem_meter_parser).get_branch_power(13) * (id(circuit_14_240v_multiplier).state ? 2.0f : 1.0f);
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::CIRCUIT_14_POWER, x);
   - platform: template
     name: "${circuit_15_name} Power"
     id: circuit_15_power
@@ -500,6 +623,10 @@ sensor:
     lambda: |-
       if (!id(circuit_15_enabled).state) return 0.0f;
       return id(sem_meter_parser).get_branch_power(14) * (id(circuit_15_240v_multiplier).state ? 2.0f : 1.0f);
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::CIRCUIT_15_POWER, x);
   - platform: template
     name: "${circuit_16_name} Power"
     id: circuit_16_power
@@ -511,6 +638,10 @@ sensor:
     lambda: |-
       if (!id(circuit_16_enabled).state) return 0.0f;
       return id(sem_meter_parser).get_branch_power(15) * (id(circuit_16_240v_multiplier).state ? 2.0f : 1.0f);
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::CIRCUIT_16_POWER, x);
 
   - platform: template
     name: "Balance Power"
@@ -532,6 +663,10 @@ sensor:
           id(circuit_15_power).state + id(circuit_16_power).state;
       const float balance = id(total_main_power).state - branches;
       return balance > 0.0f ? balance : 0.0f;
+    filters:
+      - lambda: |-
+          return id(sem_meter_parser).validate_sensor_value(
+              esphome::sem_meter::MeasurementId::BALANCE_POWER, x);
 
   - platform: total_daily_energy
     name: "${circuit_1_name} Daily Energy"

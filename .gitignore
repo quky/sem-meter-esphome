@@ -4,15 +4,9 @@ build/
 *.bin
 *.elf
 *.map
-*.ota.bin
-*.factory.bin
-firmware*.*
 
 # Local secrets and private backups
 secrets.yaml
-parser_replay_test.obj
-tests/parser_replay_test.exe
-vc140.pdb
 backups/*
 !backups/README.md
 *.backup
@@ -22,20 +16,42 @@ backups/*
 *firmware-backup*
 *.img
 
-# Editor and OS noise
-.vscode/
-.idea/
-*.swp
-Thumbs.db
-Desktop.ini
+# Test artifacts
+tests/parser_replay_test.exe
+tests/parser_replay_test.obj
+*.obj
+*.exe
+*.ilk
+*.idb
+*.pdb
 
 # Python
 __pycache__/
 *.pyc
 
+# IDEs
+.vscode/
+.idea/
+
+# OS files
+Thumbs.db
+Desktop.ini
+
+# Temporary files
+*.tmp
+*.log
+*.swp
+
+
+*.obj
+
 # Visual Studio
+.vs/
+*.obj
+*.exe
+*.ilk
+*.idb
 *.pdb
 
-# ESPHome
-.esphome/
-
+# macOS
+.DS_Store

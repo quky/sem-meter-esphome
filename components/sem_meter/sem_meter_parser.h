@@ -50,6 +50,9 @@ class SEMMeterRecordParser {
   float get_phase_a_voltage() const { return this->phase_voltage_[0]; }
   float get_phase_b_voltage() const { return this->phase_voltage_[1]; }
   float get_line_frequency() const { return this->line_frequency_; }
+  bool has_phase_a_voltage() const { return this->phase_voltage_initialized_[0]; }
+  bool has_phase_b_voltage() const { return this->phase_voltage_initialized_[1]; }
+  bool has_line_frequency() const { return this->line_frequency_initialized_; }
 
   bool decode_record(uint8_t record_id, const uint8_t *payload, size_t payload_size) {
     if (record_id > LAST_RECORD_ID || payload == nullptr || payload_size < RECORD_PAYLOAD_SIZE) {
@@ -87,8 +90,11 @@ class SEMMeterRecordParser {
     if (record_id == PHASE_A_RECORD_ID) {
       this->phase_voltage_[0] = static_cast<float>(raw_voltage) / this->voltage_divisor_;
       this->line_frequency_ = static_cast<float>(payload[FREQUENCY_OFFSET]);
+      this->phase_voltage_initialized_[0] = true;
+      this->line_frequency_initialized_ = true;
     } else if (record_id == PHASE_B_RECORD_ID) {
       this->phase_voltage_[1] = static_cast<float>(raw_voltage) / this->voltage_divisor_;
+      this->phase_voltage_initialized_[1] = true;
     }
 
     return true;
@@ -115,7 +121,9 @@ class SEMMeterRecordParser {
   std::array<float, 16> branch_power_{};
   std::array<float, 3> phase_power_{};
   std::array<float, 2> phase_voltage_{};
+  std::array<bool, 2> phase_voltage_initialized_{};
   float line_frequency_{0.0f};
+  bool line_frequency_initialized_{false};
   float branch_power_divisor_{BRANCH_POWER_DIVISOR};
   float main_power_divisor_{MAIN_POWER_DIVISOR};
   float voltage_divisor_{VOLTAGE_DIVISOR};

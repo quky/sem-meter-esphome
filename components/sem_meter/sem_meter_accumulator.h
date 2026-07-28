@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 
+#include "sem_meter_diagnostics.h"
 #include "sem_meter_parser.h"
 
 namespace esphome::sem_meter {
@@ -30,15 +31,26 @@ class SEMMeterAccumulatorObserver {
 
 class SEMMeterFrameAccumulator {
  public:
-  SEMMeterFeedResult feed(const uint8_t *data, size_t size, SEMMeterAccumulatorObserver *observer = nullptr) {
+  SEMMeterFeedResult feed(const uint8_t *data, size_t size, SEMMeterAccumulatorObserver *observer = nullptr,
+                          SEMMeterDiagnostics *diagnostics = nullptr) {
     SEMMeterFeedResult result;
+    if (diagnostics != nullptr) {
+      diagnostics->record_feed_call(data != nullptr ? size : 0);
+    }
     this->append_(data, size, result);
+    if (diagnostics != nullptr) {
+      diagnostics->record_buffer_recovery(result.bytes_dropped);
+    }
 
     static_assert(MAX_FRAMES_PER_LOOP == 1, "feed() is designed to process exactly one frame at most");
     if (this->buffer_size_ >= COMPLETE_FRAME_SIZE) {
-      result.decoded_records = this->decode_frame_(this->buffer_.data(), COMPLETE_FRAME_SIZE, observer);
+      result.decoded_records =
+          this->decode_frame_(this->buffer_.data(), COMPLETE_FRAME_SIZE, observer, diagnostics);
       this->consume_frame_();
       result.frames_processed = 1;
+      if (diagnostics != nullptr) {
+        diagnostics->record_frame_processed(result.decoded_records);
+      }
     }
 
     return result;
@@ -83,7 +95,8 @@ class SEMMeterFrameAccumulator {
     result.bytes_dropped += bytes_to_drop;
   }
 
-  size_t decode_frame_(const uint8_t *data, size_t size, SEMMeterAccumulatorObserver *observer) {
+  size_t decode_frame_(const uint8_t *data, size_t size, SEMMeterAccumulatorObserver *observer,
+                       SEMMeterDiagnostics *diagnostics) {
     size_t decoded_records = 0;
 
     for (size_t offset = 0; offset < size; offset++) {
@@ -93,6 +106,9 @@ class SEMMeterFrameAccumulator {
 
       const size_t remaining = size - offset;
       if (remaining < RECORD_MINIMUM_SIZE) {
+        if (diagnostics != nullptr) {
+          diagnostics->record_partial_record();
+        }
         if (observer != nullptr) {
           observer->on_partial_record(offset);
         }
@@ -102,6 +118,9 @@ class SEMMeterFrameAccumulator {
       const uint8_t record_id = data[offset + 1];
       const uint8_t status = data[offset + 2];
       if (record_id > LAST_RECORD_ID || !SEMMeterRecordParser::is_valid_status(status)) {
+        if (diagnostics != nullptr) {
+          diagnostics->record_malformed_candidate();
+        }
         if (observer != nullptr) {
           observer->on_malformed_candidate(offset, record_id, status);
         }
@@ -110,6 +129,9 @@ class SEMMeterFrameAccumulator {
 
       if (this->parser_.decode_record(record_id, data + offset + 2, remaining - 2)) {
         decoded_records++;
+        if (diagnostics != nullptr) {
+          diagnostics->record_decoded_record(status == STATUS_IDLE);
+        }
         if (observer != nullptr) {
           observer->on_decoded_record(offset, data[offset], record_id, status);
         }
