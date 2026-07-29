@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -20,9 +21,13 @@ using esphome::sem_meter::ComponentState;
 using esphome::sem_meter::DEFAULT_UART_TIMEOUT_MS;
 using esphome::sem_meter::MARKER_PRIMARY;
 using esphome::sem_meter::MARKER_SECONDARY;
+using esphome::sem_meter::MAX_BYTES_PER_LOOP;
 using esphome::sem_meter::MAX_BUFFER_SIZE;
 using esphome::sem_meter::MeasurementId;
 using esphome::sem_meter::RECORD_OVERLAP_SIZE;
+using esphome::sem_meter::RECORD_CADENCE_SIZE;
+using esphome::sem_meter::RECORD_COUNT;
+using esphome::sem_meter::RECORD_SEQUENCE_SIZE;
 using esphome::sem_meter::SEMMeterAccumulatorObserver;
 using esphome::sem_meter::SEMMeterDiagnosticCounters;
 using esphome::sem_meter::SEMMeterDiagnostics;
@@ -45,16 +50,20 @@ using esphome::sem_meter::validation_failure_reason_to_string;
 
 class TrackingObserver final : public SEMMeterAccumulatorObserver {
  public:
-  void on_decoded_record(size_t, uint8_t marker, uint8_t, uint8_t) override {
+  void on_decoded_record(size_t, uint8_t marker, uint8_t record_id, uint8_t) override {
     if (marker == MARKER_PRIMARY) {
       this->primary_records++;
     } else if (marker == MARKER_SECONDARY) {
       this->secondary_records++;
     }
+    if (record_id < this->record_counts.size()) {
+      this->record_counts[record_id]++;
+    }
   }
 
   size_t primary_records{0};
   size_t secondary_records{0};
+  std::array<size_t, RECORD_COUNT> record_counts{};
 };
 
 class RecordingEventListener final : public SEMMeterEventListener {
@@ -102,6 +111,22 @@ class ReplaySession {
   }
 
   SEMMeterFeedResult feed(const std::vector<uint8_t> &bytes) { return this->feed(bytes.data(), bytes.size()); }
+
+  SEMMeterFeedResult feed_validated(const uint8_t *data, size_t size,
+                                    SEMMeterValidator &validator,
+                                    uint32_t timestamp_ms) {
+    const SEMMeterFeedResult result = this->accumulator.feed(
+        data, size, &this->observer, &this->diagnostics, &validator, timestamp_ms);
+    expect_bounded();
+    return result;
+  }
+
+  SEMMeterFeedResult feed_validated(const std::vector<uint8_t> &bytes,
+                                    SEMMeterValidator &validator,
+                                    uint32_t timestamp_ms) {
+    return this->feed_validated(bytes.data(), bytes.size(), validator,
+                                timestamp_ms);
+  }
 
   void expect_bounded() const {
     if (this->accumulator.buffered_size() > MAX_BUFFER_SIZE) {
@@ -159,6 +184,28 @@ bool dispatch_health_update(SEMMeterEventDispatcher &dispatcher, const SEMMeterH
     return false;
   }
   return dispatcher.dispatch(update.event, update.timestamp_ms);
+}
+
+size_t find_circuit_1_offset(const std::vector<uint8_t> &frame) {
+  for (size_t offset = 0; offset + RECORD_SEQUENCE_SIZE <= frame.size(); offset++) {
+    if (SEMMeterRecordParser::is_marker(frame[offset]) && frame[offset + 1] == 0x00 &&
+        SEMMeterRecordParser::is_valid_status(frame[offset + 2])) {
+      return offset;
+    }
+  }
+  throw std::runtime_error("could not locate Circuit 1 record");
+}
+
+void set_branch_raw_power(std::vector<uint8_t> &frame, size_t record_offset,
+                          uint32_t raw_power) {
+  frame[record_offset + 2] = esphome::sem_meter::STATUS_ACTIVE;
+  frame[record_offset + 14] =
+      static_cast<uint8_t>((raw_power >> 24) & 0xFF);
+  frame[record_offset + 15] =
+      static_cast<uint8_t>((raw_power >> 16) & 0xFF);
+  frame[record_offset + 16] =
+      static_cast<uint8_t>((raw_power >> 8) & 0xFF);
+  frame[record_offset + 17] = static_cast<uint8_t>(raw_power & 0xFF);
 }
 
 void verify_recovered_measurements(const ReplaySession &session, const std::string &mode) {
@@ -272,40 +319,319 @@ void test_buffer_recovery(const std::vector<uint8_t> &frame) {
   const std::vector<uint8_t> garbage(MAX_BUFFER_SIZE + 106, 0xA5);
   const SEMMeterFeedResult overflow = session.feed(garbage);
   expect_true(overflow.bytes_dropped == 106, "large input did not report the expected dropped prefix");
-  expect_true(overflow.frames_processed == 1, "large input did not process exactly one bounded window");
+  expect_true(overflow.frames_processed == 0,
+              "unstructured garbage was reported as a processed frame");
   expect_true(overflow.decoded_records == 0, "garbage unexpectedly decoded records");
 
   const SEMMeterFeedResult recovery_feed = session.feed(frame);
-  expect_true(recovery_feed.bytes_dropped > 0, "full buffer did not exercise make-room recovery");
-  session.feed(nullptr, 0);
+  expect_true(recovery_feed.bytes_dropped == 0,
+              "discarded garbage caused an unnecessary second buffer recovery");
+  expect_true(recovery_feed.frames_processed == 1,
+              "valid cycle did not decode immediately after overflow recovery");
   expect_true(session.counters().bytes_dropped == overflow.bytes_dropped + recovery_feed.bytes_dropped,
               "diagnostic dropped-byte counter did not match feed results");
-  expect_true(session.counters().buffer_recovery_events == 2,
-              "diagnostic recovery-event counter did not count both overflow recoveries");
-  expect_true(session.counters().zero_valid_record_frames > 0,
-              "garbage frame did not increment the zero-valid-record counter");
+  expect_true(session.counters().buffer_recovery_events == 1,
+              "diagnostic recovery-event counter did not count the overflow");
   verify_recovered_measurements(session, "buffer overflow recovery");
   std::cout << "[PASS] bounded buffer drops old bytes and recovers valid readings\n";
 }
 
-void test_malformed_and_partial_counters() {
-  ReplaySession session;
-  std::vector<uint8_t> frame(COMPLETE_FRAME_SIZE, 0x00);
-  frame[0] = MARKER_PRIMARY;
-  frame[1] = 0x13;
-  frame[2] = STATUS_IDLE;
-  frame[COMPLETE_FRAME_SIZE - 1] = MARKER_SECONDARY;
+void test_embedded_false_circuit_1_candidate(const std::vector<uint8_t> &frame) {
+  std::vector<uint8_t> corrupted = frame;
+  const size_t circuit_1_offset = find_circuit_1_offset(frame);
+  const size_t false_candidate_offset = circuit_1_offset + 3 * RECORD_CADENCE_SIZE + 4;
+  const uint32_t false_raw_power = 0x7004C034U;
+  corrupted[false_candidate_offset] = MARKER_SECONDARY;
+  corrupted[false_candidate_offset + 1] = 0x00;
+  corrupted[false_candidate_offset + 2] = esphome::sem_meter::STATUS_ACTIVE;
+  corrupted[false_candidate_offset + 14] =
+      static_cast<uint8_t>((false_raw_power >> 24) & 0xFF);
+  corrupted[false_candidate_offset + 15] =
+      static_cast<uint8_t>((false_raw_power >> 16) & 0xFF);
+  corrupted[false_candidate_offset + 16] =
+      static_cast<uint8_t>((false_raw_power >> 8) & 0xFF);
+  corrupted[false_candidate_offset + 17] =
+      static_cast<uint8_t>(false_raw_power & 0xFF);
 
-  const SEMMeterFeedResult result = session.feed(frame);
-  expect_true(result.frames_processed == 1, "diagnostic candidate frame was not processed");
-  expect_true(result.decoded_records == 0, "diagnostic candidate frame unexpectedly decoded a record");
-  expect_true(session.counters().malformed_record_candidates == 1,
-              "malformed-candidate counter did not increment exactly once");
-  expect_true(session.counters().partial_records == 1,
-              "partial-record counter did not increment exactly once");
-  expect_true(session.counters().zero_valid_record_frames == 1,
-              "zero-valid-record frame counter did not increment");
+  ReplaySession session;
+  const SEMMeterFeedResult result = session.feed(corrupted);
+  expect_true(result.frames_processed == 1 && result.decoded_records == RECORD_COUNT,
+              "embedded payload candidate prevented valid cycle decoding");
+  expect_near(session.accumulator.parser().get_branch_power(0), 0.0f, 0.01f,
+              "embedded false candidate overwrote Circuit 1");
+  expect_true(session.observer.record_counts[0] == 1,
+              "embedded false candidate decoded Circuit 1 more than once");
+  verify_recovered_measurements(session, "embedded false Circuit 1 candidate");
+  std::cout << "[PASS] embedded 3B 00 03 / 0x7004C034 candidate is ignored\n";
+}
+
+void test_duplicate_circuit_1_candidate_inside_payload(const std::vector<uint8_t> &frame) {
+  std::vector<uint8_t> duplicated = frame;
+  const size_t circuit_1_offset = find_circuit_1_offset(frame);
+  const size_t duplicate_offset = circuit_1_offset + 7 * RECORD_CADENCE_SIZE + 4;
+  duplicated[duplicate_offset] = MARKER_PRIMARY;
+  duplicated[duplicate_offset + 1] = 0x00;
+  duplicated[duplicate_offset + 2] = STATUS_IDLE;
+
+  ReplaySession session;
+  const SEMMeterFeedResult result = session.feed(duplicated);
+  expect_true(result.frames_processed == 1 && result.decoded_records == RECORD_COUNT,
+              "payload duplicate prevented structural cycle decoding");
+  expect_true(session.observer.record_counts[0] == 1,
+              "payload duplicate was decoded as a second Circuit 1 record");
+  expect_true(session.counters().records_decoded == RECORD_COUNT,
+              "payload duplicate increased decoded-record diagnostics");
+  std::cout << "[PASS] duplicate Circuit 1 candidate inside payload is ignored\n";
+}
+
+void expect_structural_corruption_recovers(const std::vector<uint8_t> &corrupted,
+                                           const std::vector<uint8_t> &valid_frame,
+                                           const std::string &label) {
+  ReplaySession session;
+  const SEMMeterFeedResult damaged = session.feed(corrupted);
+  expect_true(damaged.frames_processed == 0,
+              label + ": damaged cycle was reported as decoded");
+  expect_true(damaged.decoded_records == 0,
+              label + ": damaged cycle mutated parser state");
+
+  const SEMMeterFeedResult recovery = session.feed(valid_frame);
+  expect_true(recovery.frames_processed == 1 &&
+                  recovery.decoded_records == RECORD_COUNT,
+              label + ": next valid cycle did not recover");
+  expect_true(session.counters().structural_cycle_rejections >= 1,
+              label + ": structural rejection was not diagnosed");
+  verify_recovered_measurements(session, label + " recovery");
+}
+
+void test_inserted_and_deleted_byte_recovery(const std::vector<uint8_t> &frame) {
+  const size_t circuit_1_offset = find_circuit_1_offset(frame);
+
+  std::vector<uint8_t> inserted = frame;
+  inserted.insert(inserted.begin() + static_cast<std::ptrdiff_t>(
+                                      circuit_1_offset + 6 * RECORD_CADENCE_SIZE + 8),
+                  0xA5);
+  expect_structural_corruption_recovers(inserted, frame, "inserted byte");
+
+  std::vector<uint8_t> deleted = frame;
+  deleted.erase(deleted.begin() + static_cast<std::ptrdiff_t>(
+                                    circuit_1_offset + 6 * RECORD_CADENCE_SIZE + 8));
+  expect_structural_corruption_recovers(deleted, frame, "deleted byte");
+  std::cout << "[PASS] inserted and deleted bytes reject the damaged cycle and recover\n";
+}
+
+void test_corrupted_record_headers_recover(const std::vector<uint8_t> &frame) {
+  const size_t circuit_1_offset = find_circuit_1_offset(frame);
+  const size_t target_offset = circuit_1_offset + 4 * RECORD_CADENCE_SIZE;
+
+  std::vector<uint8_t> marker_corruption = frame;
+  marker_corruption[target_offset] = 0xA5;
+  expect_structural_corruption_recovers(marker_corruption, frame, "corrupted marker");
+
+  std::vector<uint8_t> id_corruption = frame;
+  id_corruption[target_offset + 1] = 0x0E;
+  expect_structural_corruption_recovers(id_corruption, frame, "corrupted ID");
+
+  std::vector<uint8_t> status_corruption = frame;
+  status_corruption[target_offset + 2] = 0x02;
+  expect_structural_corruption_recovers(status_corruption, frame, "corrupted status");
+  std::cout << "[PASS] marker, ID, and status corruption recover on the next cycle\n";
+}
+
+void test_transactional_power_validation(const std::vector<uint8_t> &frame) {
+  const size_t circuit_1_offset = find_circuit_1_offset(frame);
+  const uint32_t baseline_raw_power = 0x0004C034U;
+  const uint32_t corrupted_raw_power = 0x7004C034U;
+  const uint32_t recovered_raw_power = baseline_raw_power + 95U;
+
+  std::vector<uint8_t> baseline = frame;
+  set_branch_raw_power(baseline, circuit_1_offset, baseline_raw_power);
+  std::vector<uint8_t> corrupted = baseline;
+  set_branch_raw_power(corrupted, circuit_1_offset, corrupted_raw_power);
+  std::vector<uint8_t> recovered = baseline;
+  set_branch_raw_power(recovered, circuit_1_offset, recovered_raw_power);
+
+  ReplaySession session;
+  SEMMeterValidator cycle_validator;
+
+  const SEMMeterFeedResult accepted =
+      session.feed_validated(baseline, cycle_validator, 1);
+  expect_true(accepted.frames_processed == 1 &&
+                  accepted.decoded_records == RECORD_COUNT,
+              "plausible baseline cycle was not accepted");
+  const float last_good = session.accumulator.parser().get_branch_power(0);
+  expect_near(last_good,
+              static_cast<float>(baseline_raw_power) /
+                  esphome::sem_meter::BRANCH_POWER_DIVISOR,
+              0.01f, "transactional baseline Circuit 1 power");
+  const size_t callbacks_after_baseline = session.observer.record_counts[0];
+
+  const SEMMeterFeedResult rejected =
+      session.feed_validated(corrupted, cycle_validator, 2);
+  expect_true(rejected.frames_processed == 0 &&
+                  rejected.decoded_records == 0 &&
+                  rejected.validation_rejections == 1,
+              "electrically impossible cycle was not rejected atomically");
+  expect_true(rejected.rejected_measurement ==
+                  MeasurementId::CIRCUIT_1_POWER &&
+                  rejected.rejection_reason ==
+                      ValidationFailureReason::ABOVE_MAXIMUM,
+              "Circuit 1 corruption reported the wrong rejection");
+  expect_near(rejected.rejected_value, 19782732.0f, 1.0f,
+              "validator did not inspect the corrupt candidate value");
+  expect_near(session.accumulator.parser().get_branch_power(0), last_good,
+              0.01f, "rejected candidate entered live parser state");
+  expect_true(session.observer.record_counts[0] == callbacks_after_baseline,
+              "rejected cycle reached the accepted-record observer");
+  expect_true(cycle_validator.rejected_sensor_values() == 1,
+              "transactional rejection diagnostic did not increment once");
+  expect_near(cycle_validator.last_accepted_value(
+                  MeasurementId::CIRCUIT_1_POWER),
+              last_good, 0.01f,
+              "validator lost its last-good Circuit 1 state");
+
+  const SEMMeterFeedResult recovery =
+      session.feed_validated(recovered, cycle_validator, 3);
+  expect_true(recovery.frames_processed == 1 &&
+                  recovery.decoded_records == RECORD_COUNT,
+              "following valid cycle did not recover");
+  expect_near(session.accumulator.parser().get_branch_power(0),
+              static_cast<float>(recovered_raw_power) /
+                  esphome::sem_meter::BRANCH_POWER_DIVISOR,
+              0.01f, "recovered Circuit 1 power");
+  expect_true(session.observer.record_counts[0] ==
+                  callbacks_after_baseline + 1,
+              "recovered cycle did not reach the publication observer");
+  std::cout << "[PASS] cycle validation is atomic and preserves last-good parser state\n";
+}
+
+void test_malformed_and_partial_counters() {
+  ReplaySession partial_session;
+  const std::array<uint8_t, 3> partial_candidate{MARKER_PRIMARY, 0x00, STATUS_IDLE};
+  partial_session.feed(partial_candidate.data(), partial_candidate.size());
+  partial_session.feed(nullptr, 0);
+  expect_true(partial_session.counters().partial_records == 1,
+              "incomplete structural candidate was counted more than once");
+
+  ReplaySession malformed_session;
+  std::vector<uint8_t> malformed(RECORD_SEQUENCE_SIZE, 0x00);
+  for (size_t record_id = 0; record_id < RECORD_COUNT; record_id++) {
+    const size_t offset = record_id * RECORD_CADENCE_SIZE;
+    malformed[offset] = MARKER_PRIMARY;
+    malformed[offset + 1] = static_cast<uint8_t>(record_id);
+    malformed[offset + 2] = STATUS_IDLE;
+  }
+  malformed[4 * RECORD_CADENCE_SIZE + 2] = 0x02;
+  const SEMMeterFeedResult result = malformed_session.feed(malformed);
+  expect_true(result.frames_processed == 0,
+              "structurally malformed cycle was reported as decoded");
+  expect_true(result.decoded_records == 0,
+              "structurally malformed cycle mutated parser state");
+  expect_true(result.structural_cycle_rejections == 1,
+              "structural cycle rejection was not reported once");
+  expect_true(malformed_session.counters().malformed_record_candidates == 1,
+              "malformed structural record was not counted once");
+  expect_true(malformed_session.counters().structural_cycle_rejections == 1,
+              "structural rejection diagnostic did not increment");
+  expect_true(malformed_session.counters().malformed_frames == 1,
+              "malformed-cycle diagnostic did not increment");
+  expect_true(malformed_session.counters().zero_valid_record_frames == 0,
+              "candidate rejection incorrectly incremented zero-record frames");
   std::cout << "[PASS] malformed and partial record diagnostics increment correctly\n";
+}
+
+void test_malformed_cycle_episode_deduplication(
+    const std::vector<uint8_t> &frame) {
+  std::vector<uint8_t> damaged = frame;
+  const size_t circuit_1_offset = find_circuit_1_offset(frame);
+  damaged[circuit_1_offset + 4 * RECORD_CADENCE_SIZE + 2] = 0x02;
+
+  const std::array<size_t, 3> false_candidate_offsets{
+      circuit_1_offset + 3 * RECORD_CADENCE_SIZE + 4,
+      circuit_1_offset + 7 * RECORD_CADENCE_SIZE + 4,
+      circuit_1_offset + 12 * RECORD_CADENCE_SIZE + 4};
+  for (const size_t offset : false_candidate_offsets) {
+    damaged[offset] = MARKER_SECONDARY;
+    damaged[offset + 1] = 0x00;
+    damaged[offset + 2] = esphome::sem_meter::STATUS_ACTIVE;
+  }
+
+  std::vector<uint8_t> damaged_then_valid;
+  damaged_then_valid.reserve(damaged.size() + frame.size());
+  damaged_then_valid.insert(damaged_then_valid.end(), damaged.begin(),
+                            damaged.end());
+  damaged_then_valid.insert(damaged_then_valid.end(), frame.begin(),
+                            frame.end());
+
+  ReplaySession single_feed_session;
+  const SEMMeterFeedResult single_feed =
+      single_feed_session.feed(damaged_then_valid);
+  expect_true(single_feed.structural_cycle_rejections ==
+                  false_candidate_offsets.size() + 1,
+              "granular structural rejection count was incorrect");
+  expect_true(single_feed.malformed_frames == 1,
+              "multiple false candidates inflated malformed frames");
+  expect_true(single_feed_session.counters().malformed_frames == 1,
+              "malformed-frame diagnostic was not episode-based");
+  expect_true(single_feed.frames_processed == 1,
+              "next valid cycle did not clear the malformed episode");
+
+  ReplaySession chunked_session;
+  SEMMeterHealthTracker health;
+  SEMMeterEventDispatcher dispatcher;
+  size_t malformed_events = 0;
+  size_t structural_rejections = 0;
+  for (size_t offset = 0; offset < damaged_then_valid.size();
+       offset += MAX_BYTES_PER_LOOP) {
+    const size_t chunk_size =
+        std::min(MAX_BYTES_PER_LOOP, damaged_then_valid.size() - offset);
+    const SEMMeterFeedResult result =
+        chunked_session.feed(damaged_then_valid.data() + offset, chunk_size);
+    malformed_events += result.malformed_frames;
+    structural_rejections += result.structural_cycle_rejections;
+    for (size_t event_index = 0; event_index < result.malformed_frames;
+         event_index++) {
+      expect_true(dispatch_health_update(
+                      dispatcher,
+                      health.record_malformed_frame(
+                          static_cast<uint32_t>(offset))),
+                  "malformed cycle event was not dispatched");
+    }
+  }
+  expect_true(malformed_events == 1,
+              "retained damaged bytes emitted duplicate malformed events");
+  expect_true(structural_rejections == false_candidate_offsets.size() + 1,
+              "chunked replay lost granular structural rejections");
+  expect_true(chunked_session.counters().malformed_frames == 1,
+              "chunked malformed diagnostic incremented more than once");
+  expect_true(dispatcher.event_count() == 1 &&
+                  dispatcher.last_event() == ComponentEvent::MALFORMED_FRAME,
+              "one damaged cycle did not dispatch exactly one malformed event");
+  expect_true(chunked_session.counters().frames_processed == 1,
+              "chunked malformed replay did not recover on the valid cycle");
+
+  const SEMMeterFeedResult next_episode =
+      chunked_session.feed(damaged_then_valid);
+  expect_true(next_episode.malformed_frames == 1,
+              "successful recovery did not clear the malformed episode");
+  expect_true(chunked_session.counters().malformed_frames == 2,
+              "second damaged physical cycle was not counted");
+  std::cout << "[PASS] malformed cycles deduplicate false candidates and retained bytes\n";
+}
+
+void test_yaml_entity_names() {
+  std::ifstream input("sem-meter.yaml");
+  expect_true(static_cast<bool>(input), "could not open sem-meter.yaml");
+  const std::string yaml((std::istreambuf_iterator<char>(input)),
+                         std::istreambuf_iterator<char>());
+  expect_true(yaml.find("circuit_4_name: surge protector") !=
+                  std::string::npos,
+              "intentional Surge Protector name is missing");
+  expect_true(yaml.find("circuit_13_name: \"A\\u2044C\"") !=
+                  std::string::npos,
+              "A/C fraction-slash spelling changed");
+  expect_true(yaml.find("circuit_13_name: A/C") == std::string::npos,
+              "literal A/C spelling would trigger ESPHome naming warnings");
+  std::cout << "[PASS] intentional YAML names preserve Surge Protector and A/C entity identity\n";
 }
 
 void test_timing_statistics() {
@@ -791,7 +1117,13 @@ int main(int argc, char **argv) {
     test_half_frame_start_recovery(frame);
     test_back_to_back_frames(frame);
     test_buffer_recovery(frame);
+    test_embedded_false_circuit_1_candidate(frame);
+    test_duplicate_circuit_1_candidate_inside_payload(frame);
+    test_inserted_and_deleted_byte_recovery(frame);
+    test_corrupted_record_headers_recover(frame);
+    test_transactional_power_validation(frame);
     test_malformed_and_partial_counters();
+    test_malformed_cycle_episode_deduplication(frame);
     test_timing_statistics();
     test_diagnostic_string_conversions();
     test_sensor_value_validation();
@@ -801,6 +1133,7 @@ int main(int argc, char **argv) {
     test_non_recursive_event_dispatch();
     test_retained_overlap(frame);
     test_idle_record_reset(frame);
+    test_yaml_entity_names();
 
     std::cout << "[PASS] all SEM Meter shared-accumulator replay tests passed\n";
     return 0;

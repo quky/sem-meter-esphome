@@ -20,6 +20,10 @@ inline constexpr uint8_t STATUS_ALTERNATE_ACTIVE = 0x07;
 inline constexpr size_t RECORD_PAYLOAD_SIZE = 21;
 inline constexpr size_t RECORD_MINIMUM_SIZE = 2 + RECORD_PAYLOAD_SIZE;
 inline constexpr size_t RECORD_OVERLAP_SIZE = RECORD_MINIMUM_SIZE - 1;
+inline constexpr size_t RECORD_CADENCE_SIZE = 22;
+inline constexpr size_t RECORD_COUNT = 19;
+inline constexpr size_t RECORD_SEQUENCE_SIZE =
+    (RECORD_COUNT - 1) * RECORD_CADENCE_SIZE + RECORD_MINIMUM_SIZE;
 
 inline constexpr uint8_t LAST_BRANCH_RECORD_ID = 0x0F;
 inline constexpr uint8_t PHASE_A_RECORD_ID = 0x10;

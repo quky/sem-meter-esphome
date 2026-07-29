@@ -1,8 +1,29 @@
+# ===========================================================
+# SEM Meter Physical CT Mapping
+#
+# CT 1  -> Breaker 6      -> Laundry
+# CT 2  -> Breaker 8      -> Kitchen Cooking
+# CT 3  -> Breaker 10     -> Master Bedroom
+# CT 4  -> Breaker 12     -> Surge Protector
+# CT 5  -> Breaker 22A    -> Generator Plug
+# CT 6  -> Breaker 22B    -> Microwave
+# CT 7  -> Breaker 24A    -> Air Handler
+# CT 8  -> Breaker 7      -> Unknown
+# CT 9  -> Breaker 5      -> Unknown
+# CT10  -> Breaker 21-23  -> Pool Pump (240V)
+# CT11  -> Breaker 19A    -> Master Bedroom Light
+# CT12  -> Breaker 17B    -> Lights Ely/Mami Bathroom
+# CT13  -> Breaker 13-15  -> A/C (240V)
+# CT14  -> Breaker 9      -> Garage/Laundry/Kitchen Lights
+# CT15  -> Breaker 3      -> Receptacle Below Panel
+# CT16  -> Breaker 1A     -> TP-Link Power Strip
+# ===========================================================
+
 substitutions:
   circuit_1_name: laundry
   circuit_2_name: kitchen cooking
   circuit_3_name: master bedroom
-  circuit_4_name: welder plug
+  circuit_4_name: surge protector
   circuit_5_name: generator plug
   circuit_6_name: microwave
   circuit_7_name: air handler

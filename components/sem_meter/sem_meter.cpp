@@ -38,14 +38,33 @@ void SEMMeterComponent::loop() {
     }
   }
 
+  const uint32_t now = millis();
   const uint32_t accumulator_started_at = micros();
   const SEMMeterFeedResult result =
-      this->accumulator_.feed(incoming.data(), bytes_to_read, this, &this->diagnostics_);
+      this->accumulator_.feed(incoming.data(), bytes_to_read, this, &this->diagnostics_,
+                              &this->cycle_validator_, now);
   this->diagnostics_.record_accumulator_time(micros() - accumulator_started_at);
 
-  const uint32_t now = millis();
   if (result.bytes_dropped > 0) {
     this->apply_health_update_(this->health_.record_buffer_overflow(now));
+  }
+  for (size_t malformed_index = 0;
+       malformed_index < result.malformed_frames; malformed_index++) {
+    this->apply_health_update_(this->health_.record_malformed_frame(now));
+  }
+  if (result.validation_rejections > 0) {
+    this->validator_.record_rejection(
+        result.rejected_measurement, result.rejected_value, now,
+        result.rejection_reason);
+    ESP_LOGW(TAG, "SEM Meter rejected %s value %.2f %s: %s",
+             measurement_id_to_string(result.rejected_measurement),
+             result.rejected_value,
+             measurement_unit_to_string(result.rejected_measurement),
+             validation_failure_reason_to_string(result.rejection_reason));
+    if (this->dispatch_event_(ComponentEvent::INVALID_SENSOR_VALUE, now)) {
+      this->publish_immediate_diagnostics_();
+    }
+    this->publish_rejection_diagnostics_();
   }
   if (result.frames_processed > 0 && result.decoded_records == 0) {
     this->apply_health_update_(this->health_.record_malformed_frame(now));
@@ -95,7 +114,7 @@ bool SEMMeterComponent::dispatch_event_(ComponentEvent event, uint32_t timestamp
       ESP_LOGW(TAG, "UART receive buffer overflow recovery");
       break;
     case ComponentEvent::MALFORMED_FRAME:
-      ESP_LOGW(TAG, "Malformed or out-of-sync 447-byte frame contained no valid records");
+      ESP_LOGW(TAG, "Rejected one malformed or out-of-sync SEM measurement cycle");
       break;
     case ComponentEvent::INVALID_SENSOR_VALUE:
       break;
@@ -156,7 +175,7 @@ void SEMMeterComponent::publish_periodic_diagnostics_(uint32_t timestamp_ms) {
   }
   if (this->malformed_frames_sensor_ != nullptr) {
     this->malformed_frames_sensor_->publish_state(
-        static_cast<float>(this->diagnostics_.counters().zero_valid_record_frames));
+        static_cast<float>(this->diagnostics_.counters().malformed_frames));
   }
   if (this->buffer_recoveries_sensor_ != nullptr) {
     this->buffer_recoveries_sensor_->publish_state(

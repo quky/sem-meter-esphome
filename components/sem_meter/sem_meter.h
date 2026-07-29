@@ -30,18 +30,23 @@ class SEMMeterComponent final : public Component,
   void set_voltage_divisor(float divisor) { this->accumulator_.parser().set_voltage_divisor(divisor); }
   void set_phase_voltage_maximum_delta(float maximum_delta) {
     this->validator_.set_phase_voltage_maximum_delta(maximum_delta);
+    this->cycle_validator_.set_phase_voltage_maximum_delta(maximum_delta);
   }
   void set_line_frequency_maximum_delta(float maximum_delta) {
     this->validator_.set_line_frequency_maximum_delta(maximum_delta);
+    this->cycle_validator_.set_line_frequency_maximum_delta(maximum_delta);
   }
   void set_circuit_power_maximum_delta(float maximum_delta) {
     this->validator_.set_circuit_power_maximum_delta(maximum_delta);
+    this->cycle_validator_.set_circuit_power_maximum_delta(maximum_delta);
   }
   void set_main_phase_power_maximum_delta(float maximum_delta) {
     this->validator_.set_main_phase_power_maximum_delta(maximum_delta);
+    this->cycle_validator_.set_main_phase_power_maximum_delta(maximum_delta);
   }
   void set_total_power_maximum_delta(float maximum_delta) {
     this->validator_.set_total_power_maximum_delta(maximum_delta);
+    this->cycle_validator_.set_total_power_maximum_delta(maximum_delta);
   }
   void set_sem_meter_healthy_binary_sensor(binary_sensor::BinarySensor *sensor) {
     this->sem_meter_healthy_binary_sensor_ = sensor;
@@ -133,6 +138,12 @@ class SEMMeterComponent final : public Component,
   uint64_t get_zero_valid_record_frames() const {
     return this->diagnostics_.counters().zero_valid_record_frames;
   }
+  uint64_t get_malformed_frames() const {
+    return this->diagnostics_.counters().malformed_frames;
+  }
+  uint64_t get_structural_cycle_rejections() const {
+    return this->diagnostics_.counters().structural_cycle_rejections;
+  }
   uint64_t get_bytes_dropped() const { return this->diagnostics_.counters().bytes_dropped; }
   uint64_t get_buffer_recovery_events() const {
     return this->diagnostics_.counters().buffer_recovery_events;
@@ -160,6 +171,7 @@ class SEMMeterComponent final : public Component,
   SEMMeterHealthTracker health_{};
   SEMMeterEventDispatcher event_dispatcher_{};
   SEMMeterValidator validator_{};
+  SEMMeterValidator cycle_validator_{};
   binary_sensor::BinarySensor *sem_meter_healthy_binary_sensor_{nullptr};
   binary_sensor::BinarySensor *uart_healthy_binary_sensor_{nullptr};
   text_sensor::TextSensor *component_state_text_sensor_{nullptr};

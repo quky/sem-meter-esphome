@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "sem_meter_parser.h"
+
 namespace esphome::sem_meter {
 
 enum class ValidationFailureReason {
@@ -317,6 +319,12 @@ class SEMMeterValidator {
     return {true, ValidationFailureReason::NONE};
   }
 
+  ValidationResult record_rejection(MeasurementId measurement, float value,
+                                    uint32_t timestamp_ms,
+                                    ValidationFailureReason reason) {
+    return this->reject_(measurement, value, timestamp_ms, reason);
+  }
+
   bool has_accepted_value(MeasurementId measurement) const {
     const size_t index = measurement_index_(measurement);
     return index < this->accepted_.size() && this->accepted_[index].initialized;
@@ -375,5 +383,89 @@ class SEMMeterValidator {
   ValidationFailureReason last_rejection_reason_{ValidationFailureReason::NONE};
   uint32_t last_rejection_timestamp_ms_{0};
 };
+
+struct SEMMeterCycleValidationResult {
+  bool valid{true};
+  MeasurementId rejected_measurement{MeasurementId::NONE};
+  float rejected_value{0.0f};
+  ValidationFailureReason rejection_reason{ValidationFailureReason::NONE};
+};
+
+inline SEMMeterCycleValidationResult validate_candidate_cycle_transactionally(
+    SEMMeterValidator &validator, const SEMMeterRecordParser &candidate,
+    uint32_t timestamp_ms) {
+  SEMMeterValidator staged_validator = validator;
+
+  const auto validate_measurement =
+      [&](MeasurementId measurement, float value) -> SEMMeterCycleValidationResult {
+    const ValidationResult result =
+        staged_validator.validate(measurement, value, timestamp_ms);
+    if (result.valid) {
+      return {};
+    }
+    validator.record_rejection(measurement, value, timestamp_ms, result.reason);
+    return {false, measurement, value, result.reason};
+  };
+
+  for (size_t index = 0; index <= LAST_BRANCH_RECORD_ID; index++) {
+    const auto measurement = static_cast<MeasurementId>(
+        static_cast<uint8_t>(MeasurementId::CIRCUIT_1_POWER) + index);
+    const SEMMeterCycleValidationResult result =
+        validate_measurement(measurement, candidate.get_branch_power(index));
+    if (!result.valid) {
+      return result;
+    }
+  }
+
+  const SEMMeterCycleValidationResult phase_a_power = validate_measurement(
+      MeasurementId::MAIN_PHASE_A_POWER, candidate.get_phase_a_power());
+  if (!phase_a_power.valid) {
+    return phase_a_power;
+  }
+  const SEMMeterCycleValidationResult phase_b_power = validate_measurement(
+      MeasurementId::MAIN_PHASE_B_POWER, candidate.get_phase_b_power());
+  if (!phase_b_power.valid) {
+    return phase_b_power;
+  }
+  const SEMMeterCycleValidationResult phase_c_power = validate_measurement(
+      MeasurementId::MAIN_PHASE_C_POWER, candidate.get_phase_c_power());
+  if (!phase_c_power.valid) {
+    return phase_c_power;
+  }
+
+  const float total_main_power = candidate.get_phase_a_power() +
+                                 candidate.get_phase_b_power() +
+                                 candidate.get_phase_c_power();
+  const SEMMeterCycleValidationResult total_power =
+      validate_measurement(MeasurementId::TOTAL_MAIN_POWER, total_main_power);
+  if (!total_power.valid) {
+    return total_power;
+  }
+
+  if (candidate.has_phase_a_voltage()) {
+    const SEMMeterCycleValidationResult phase_a_voltage = validate_measurement(
+        MeasurementId::PHASE_A_VOLTAGE, candidate.get_phase_a_voltage());
+    if (!phase_a_voltage.valid) {
+      return phase_a_voltage;
+    }
+  }
+  if (candidate.has_phase_b_voltage()) {
+    const SEMMeterCycleValidationResult phase_b_voltage = validate_measurement(
+        MeasurementId::PHASE_B_VOLTAGE, candidate.get_phase_b_voltage());
+    if (!phase_b_voltage.valid) {
+      return phase_b_voltage;
+    }
+  }
+  if (candidate.has_line_frequency()) {
+    const SEMMeterCycleValidationResult frequency = validate_measurement(
+        MeasurementId::LINE_FREQUENCY, candidate.get_line_frequency());
+    if (!frequency.valid) {
+      return frequency;
+    }
+  }
+
+  validator = staged_validator;
+  return {};
+}
 
 }  // namespace esphome::sem_meter

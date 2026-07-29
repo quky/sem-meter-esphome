@@ -250,8 +250,10 @@ struct SEMMeterDiagnosticCounters {
   uint64_t partial_records{0};
   uint64_t malformed_record_candidates{0};
   uint64_t zero_valid_record_frames{0};
+  uint64_t malformed_frames{0};
   uint64_t bytes_dropped{0};
   uint64_t buffer_recovery_events{0};
+  uint64_t structural_cycle_rejections{0};
 };
 
 class SEMMeterDiagnostics {
@@ -285,6 +287,12 @@ class SEMMeterDiagnostics {
     this->counters_.bytes_dropped += bytes_dropped;
     this->counters_.buffer_recovery_events++;
   }
+
+  void record_structural_cycle_rejection() {
+    this->counters_.structural_cycle_rejections++;
+  }
+
+  void record_malformed_frame() { this->counters_.malformed_frames++; }
 
   void record_loop_time(uint32_t elapsed_microseconds) {
     this->loop_timing_.add_sample(elapsed_microseconds);

@@ -31,6 +31,24 @@ partial data between ESPHome loop calls. Scheduler work is strictly bounded:
 - A 22-byte overlap is retained when consuming a frame so a split record can
   be completed on a later call.
 
+The accumulator synchronizes on Circuit 1 and validates all 19 record IDs in
+order at the observed 22-byte cadence before decoding. Validation is a separate
+first pass, so marker-like bytes inside a payload cannot mutate parser state.
+An incomplete candidate is retained until enough bytes arrive; a structurally
+invalid candidate is skipped while the bounded search continues toward the
+next possible Circuit 1 record.
+
+After structural verification, all records are decoded into a temporary parser
+snapshot. The electrical validator checks that complete candidate snapshot
+transactionally. Only a fully valid candidate replaces the live parser state;
+an electrical rejection leaves every previous last-good value intact.
+
+`structural_cycle_rejections` counts each plausible Circuit 1 synchronization
+candidate that fails the ordered header checks. `malformed_frames` counts a
+damaged cycle once, suppressing additional false candidates and retained bytes
+from the same damaged span. A successfully accepted cycle ends the pending
+malformed episode.
+
 If synchronization is lost and the fixed buffer fills, the oldest bytes are
 dropped with a warning. The component does not allocate memory continuously in
 its loop.

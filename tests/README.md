@@ -2,9 +2,10 @@
 
 This test replays captured SEM Meter UART data through the same pure
 fixed-buffer accumulator and record decoder used by the ESPHome component. The
-shared path includes make-room recovery, 447-byte frame scanning, and 22-byte
-overlap consumption. It does not require ESPHome, ESP-IDF, PlatformIO, or
-device hardware.
+shared path includes make-room recovery, two-pass ordered-cycle
+synchronization, transactional electrical validation, malformed-cycle
+deduplication, and 22-byte overlap consumption. It does not require ESPHome,
+ESP-IDF, PlatformIO, or device hardware.
 
 ## Captured Fixture Correction
 
