@@ -78,6 +78,23 @@ web_server:
 button:
   - platform: restart
     name: "Restart SEM Meter"
+  - platform: template
+    name: "Buzzer Two Beeps"
+    id: buzzer_two_beeps
+    disabled_by_default: true
+    entity_category: diagnostic
+    on_press:
+      - rtttl.play: "two short:d=4,o=5,b=100:16e6,16e6"
+
+# Onboard passive buzzer confirmed on GPIO41.
+# Requires LEDC/PWM; a static GPIO pulse does not produce a tone.
+output:
+  - platform: ledc
+    pin: GPIO41
+    id: buzzer_output
+
+rtttl:
+  output: buzzer_output
 
 text_sensor:
   - platform: wifi_info
