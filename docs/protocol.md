@@ -63,17 +63,18 @@ payload pointer `r` begins at the status byte:
 
 | Record byte | Meaning |
 | --- | --- |
-| Byte 0 | Marker (`0xFF` or `0x3B`) |
+| Byte 0 | Marker (`0xFF`, `0x3B`, or `0x3C`) |
 | Byte 1 | Record ID |
 | Byte 2 / `r[0]` | Status |
 | `r[4..5]` | Voltage, big-endian `uint16_t` |
 | `r[12..15]` | Power, big-endian `uint32_t` |
 | `r[20]` | Frequency in Hz |
 
-Records may begin with either marker:
+Records may begin with any of these observed markers:
 
 - `0xFF`
-- `0x3B`
+- `0x3B` (present in the original 447-byte captured fixture)
+- `0x3C` (present throughout the live UART diagnostic capture)
 
 ## Record IDs
 

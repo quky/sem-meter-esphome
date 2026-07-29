@@ -285,7 +285,8 @@ void SEMMeterComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "  Maximum frames per loop: %zu", MAX_FRAMES_PER_LOOP);
   ESP_LOGCONFIG(TAG, "  Receive buffer capacity: %zu bytes", MAX_BUFFER_SIZE);
   ESP_LOGCONFIG(TAG, "  UART valid-frame timeout: %" PRIu32 " ms", this->health_.uart_timeout_ms());
-  ESP_LOGCONFIG(TAG, "  Record markers: 0x%02X, 0x%02X", MARKER_PRIMARY, MARKER_SECONDARY);
+  ESP_LOGCONFIG(TAG, "  Record markers: 0x%02X, 0x%02X, 0x%02X", MARKER_PRIMARY,
+                MARKER_SECONDARY, MARKER_LIVE_SECONDARY);
   ESP_LOGCONFIG(TAG, "  Branch power divisor: %.3f", this->accumulator_.parser().get_branch_power_divisor());
   ESP_LOGCONFIG(TAG, "  Main power divisor: %.3f", this->accumulator_.parser().get_main_power_divisor());
   ESP_LOGCONFIG(TAG, "  Voltage divisor: %.3f", this->accumulator_.parser().get_voltage_divisor());

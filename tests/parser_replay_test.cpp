@@ -21,6 +21,7 @@ using esphome::sem_meter::ComponentState;
 using esphome::sem_meter::DEFAULT_UART_TIMEOUT_MS;
 using esphome::sem_meter::MARKER_PRIMARY;
 using esphome::sem_meter::MARKER_SECONDARY;
+using esphome::sem_meter::MARKER_LIVE_SECONDARY;
 using esphome::sem_meter::MAX_BYTES_PER_LOOP;
 using esphome::sem_meter::MAX_BUFFER_SIZE;
 using esphome::sem_meter::MeasurementId;
@@ -55,6 +56,8 @@ class TrackingObserver final : public SEMMeterAccumulatorObserver {
       this->primary_records++;
     } else if (marker == MARKER_SECONDARY) {
       this->secondary_records++;
+    } else if (marker == MARKER_LIVE_SECONDARY) {
+      this->live_secondary_records++;
     }
     if (record_id < this->record_counts.size()) {
       this->record_counts[record_id]++;
@@ -63,6 +66,7 @@ class TrackingObserver final : public SEMMeterAccumulatorObserver {
 
   size_t primary_records{0};
   size_t secondary_records{0};
+  size_t live_secondary_records{0};
   std::array<size_t, RECORD_COUNT> record_counts{};
 };
 
@@ -336,6 +340,100 @@ void test_buffer_recovery(const std::vector<uint8_t> &frame) {
   std::cout << "[PASS] bounded buffer drops old bytes and recovers valid readings\n";
 }
 
+void expect_structural_corruption_recovers(
+    const std::vector<uint8_t> &corrupted,
+    const std::vector<uint8_t> &valid_frame, const std::string &label);
+
+void test_live_marker_pattern(const std::vector<uint8_t> &frame) {
+  expect_true(frame.size() == COMPLETE_FRAME_SIZE,
+              "live-marker fixture must contain exactly 447 bytes");
+  const size_t circuit_1_offset = find_circuit_1_offset(frame);
+  expect_true(circuit_1_offset == 28,
+              "live-marker fixture Circuit 1 did not begin at byte 28");
+  expect_true(circuit_1_offset + RECORD_SEQUENCE_SIZE == frame.size(),
+              "live-marker fixture did not end on the exact 447-byte cadence");
+
+  const std::array<uint8_t, RECORD_COUNT> expected_markers{
+      MARKER_PRIMARY,        MARKER_PRIMARY,        MARKER_LIVE_SECONDARY,
+      MARKER_LIVE_SECONDARY, MARKER_PRIMARY,        MARKER_PRIMARY,
+      MARKER_LIVE_SECONDARY, MARKER_LIVE_SECONDARY, MARKER_PRIMARY,
+      MARKER_PRIMARY,        MARKER_LIVE_SECONDARY, MARKER_LIVE_SECONDARY,
+      MARKER_LIVE_SECONDARY, MARKER_PRIMARY,        MARKER_LIVE_SECONDARY,
+      MARKER_LIVE_SECONDARY, MARKER_LIVE_SECONDARY, MARKER_LIVE_SECONDARY,
+      MARKER_LIVE_SECONDARY};
+  for (size_t record_id = 0; record_id < RECORD_COUNT; record_id++) {
+    const size_t offset = circuit_1_offset + record_id * RECORD_CADENCE_SIZE;
+    expect_true(frame[offset] == expected_markers[record_id],
+                "live-marker fixture marker pattern changed at record " +
+                    std::to_string(record_id));
+    expect_true(frame[offset + 1] == record_id,
+                "live-marker fixture record ordering changed");
+    expect_true(SEMMeterRecordParser::is_valid_status(frame[offset + 2]),
+                "live-marker fixture contains an invalid status");
+  }
+
+  ReplaySession session;
+  constexpr size_t LIVE_REPLAY_CYCLES = 6;
+  constexpr std::array<size_t, 4> LIVE_UART_CHUNKS{114, 114, 114, 105};
+  for (size_t cycle = 0; cycle < LIVE_REPLAY_CYCLES; cycle++) {
+    size_t offset = 0;
+    for (const size_t chunk_size : LIVE_UART_CHUNKS) {
+      session.feed(frame.data() + offset, chunk_size);
+      offset += chunk_size;
+    }
+    expect_true(offset == COMPLETE_FRAME_SIZE,
+                "live UART chunk sizes did not total 447 bytes");
+  }
+
+  expect_true(session.counters().frames_processed == LIVE_REPLAY_CYCLES,
+              "live-marker cycles were not accepted continuously");
+  expect_true(session.counters().records_decoded ==
+                  LIVE_REPLAY_CYCLES * RECORD_COUNT,
+              "live-marker replay did not decode every ordered record");
+  expect_true(session.counters().structural_cycle_rejections == 0,
+              "valid live-marker cycles caused structural rejections");
+  expect_true(session.counters().malformed_frames == 0,
+              "valid live-marker cycles opened a malformed episode");
+  expect_true(session.observer.primary_records > 0 &&
+                  session.observer.live_secondary_records > 0,
+              "mixed 0xFF/0x3C records were not both decoded");
+  expect_true(session.observer.secondary_records == 0,
+              "ordered live fixture unexpectedly used marker 0x3B");
+  verify_recovered_measurements(session, "114/114/114/105 live-marker replay");
+  std::cout << "[PASS] repeated mixed 0xFF/0x3C cycles decode without malformed diagnostics\n";
+}
+
+void test_live_marker_rejections_and_recovery(
+    const std::vector<uint8_t> &frame) {
+  const size_t circuit_1_offset = find_circuit_1_offset(frame);
+  const size_t target_offset =
+      circuit_1_offset + 2 * RECORD_CADENCE_SIZE;
+
+  std::vector<uint8_t> invalid_marker = frame;
+  invalid_marker[target_offset] = 0x3D;
+  expect_structural_corruption_recovers(invalid_marker, frame,
+                                        "live invalid marker");
+
+  std::vector<uint8_t> invalid_id = frame;
+  invalid_id[target_offset + 1] = 0x03;
+  expect_structural_corruption_recovers(invalid_id, frame,
+                                        "live corrupted ID");
+
+  std::vector<uint8_t> inserted = frame;
+  inserted.insert(inserted.begin() + static_cast<std::ptrdiff_t>(
+                                      target_offset + 8),
+                  0xA5);
+  expect_structural_corruption_recovers(inserted, frame,
+                                        "live inserted byte");
+
+  std::vector<uint8_t> deleted = frame;
+  deleted.erase(deleted.begin() +
+                static_cast<std::ptrdiff_t>(target_offset + 8));
+  expect_structural_corruption_recovers(deleted, frame,
+                                        "live deleted byte");
+  std::cout << "[PASS] live-marker cycles still reject invalid markers, IDs, and shifted boundaries\n";
+}
+
 void test_embedded_false_circuit_1_candidate(const std::vector<uint8_t> &frame) {
   std::vector<uint8_t> corrupted = frame;
   const size_t circuit_1_offset = find_circuit_1_offset(frame);
@@ -539,13 +637,14 @@ void test_malformed_and_partial_counters() {
   std::cout << "[PASS] malformed and partial record diagnostics increment correctly\n";
 }
 
-void test_malformed_cycle_episode_deduplication(
-    const std::vector<uint8_t> &frame) {
+std::vector<uint8_t> make_multi_candidate_damaged_cycle(
+    const std::vector<uint8_t> &frame,
+    std::array<size_t, 3> &false_candidate_offsets) {
   std::vector<uint8_t> damaged = frame;
   const size_t circuit_1_offset = find_circuit_1_offset(frame);
   damaged[circuit_1_offset + 4 * RECORD_CADENCE_SIZE + 2] = 0x02;
 
-  const std::array<size_t, 3> false_candidate_offsets{
+  false_candidate_offsets = {
       circuit_1_offset + 3 * RECORD_CADENCE_SIZE + 4,
       circuit_1_offset + 7 * RECORD_CADENCE_SIZE + 4,
       circuit_1_offset + 12 * RECORD_CADENCE_SIZE + 4};
@@ -554,6 +653,14 @@ void test_malformed_cycle_episode_deduplication(
     damaged[offset + 1] = 0x00;
     damaged[offset + 2] = esphome::sem_meter::STATUS_ACTIVE;
   }
+  return damaged;
+}
+
+void test_malformed_cycle_episode_deduplication(
+    const std::vector<uint8_t> &frame) {
+  std::array<size_t, 3> false_candidate_offsets{};
+  const std::vector<uint8_t> damaged =
+      make_multi_candidate_damaged_cycle(frame, false_candidate_offsets);
 
   std::vector<uint8_t> damaged_then_valid;
   damaged_then_valid.reserve(damaged.size() + frame.size());
@@ -1105,14 +1212,24 @@ int main(int argc, char **argv) {
   try {
     const std::string fixture_path = argc > 1 ? argv[1] : "tests/captured_frame_001.hex";
     const std::vector<uint8_t> frame = load_hex_file(fixture_path);
+    const std::string live_fixture_path =
+        argc > 2 ? argv[2] : "tests/captured_live_markers_001.hex";
+    const std::vector<uint8_t> live_frame = load_hex_file(live_fixture_path);
     expect_true(frame.size() == COMPLETE_FRAME_SIZE,
                 "fixture must contain exactly 447 bytes; got " + std::to_string(frame.size()));
+    expect_true(live_frame.size() == COMPLETE_FRAME_SIZE,
+                "live-marker fixture must contain exactly 447 bytes; got " +
+                    std::to_string(live_frame.size()));
     std::cout << "[PASS] fixture length: " << frame.size() << " bytes\n";
+    std::cout << "[PASS] live-marker fixture length: " << live_frame.size()
+              << " bytes\n";
     std::cout << "[PASS] shared limits: MAX_BUFFER_SIZE=" << MAX_BUFFER_SIZE
               << ", overlap=" << RECORD_OVERLAP_SIZE << " bytes\n";
 
     test_chunked_replay(frame);
     test_bytewise_replay(frame);
+    test_live_marker_pattern(live_frame);
+    test_live_marker_rejections_and_recovery(live_frame);
     test_garbage_prefix_recovery(frame);
     test_half_frame_start_recovery(frame);
     test_back_to_back_frames(frame);
@@ -1122,6 +1239,7 @@ int main(int argc, char **argv) {
     test_inserted_and_deleted_byte_recovery(frame);
     test_corrupted_record_headers_recover(frame);
     test_transactional_power_validation(frame);
+    test_transactional_power_validation(live_frame);
     test_malformed_and_partial_counters();
     test_malformed_cycle_episode_deduplication(frame);
     test_timing_statistics();

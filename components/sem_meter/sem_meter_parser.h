@@ -13,6 +13,7 @@ inline constexpr float VOLTAGE_DIVISOR = 10.30f;
 
 inline constexpr uint8_t MARKER_PRIMARY = 0xFF;
 inline constexpr uint8_t MARKER_SECONDARY = 0x3B;
+inline constexpr uint8_t MARKER_LIVE_SECONDARY = 0x3C;
 inline constexpr uint8_t STATUS_IDLE = 0x01;
 inline constexpr uint8_t STATUS_ACTIVE = 0x03;
 inline constexpr uint8_t STATUS_ALTERNATE_ACTIVE = 0x07;
@@ -105,7 +106,8 @@ class SEMMeterRecordParser {
   }
 
   static bool is_marker(uint8_t value) {
-    return value == MARKER_PRIMARY || value == MARKER_SECONDARY;
+    return value == MARKER_PRIMARY || value == MARKER_SECONDARY ||
+           value == MARKER_LIVE_SECONDARY;
   }
 
   static bool is_valid_status(uint8_t value) {
