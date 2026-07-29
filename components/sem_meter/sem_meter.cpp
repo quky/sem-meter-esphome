@@ -72,7 +72,8 @@ void SEMMeterComponent::loop() {
     this->apply_health_update_(this->health_.record_malformed_frame(now));
   }
   if (result.frames_processed > 0 && result.decoded_records > 0) {
-    this->apply_health_update_(this->health_.record_valid_frame(now));
+    this->apply_health_update_(
+        this->watchdog_gate_.record_accepted_frame(this->health_, now));
   }
   this->evaluate_watchdog_(now);
   this->publish_periodic_diagnostics_(now);
@@ -305,6 +306,14 @@ void SEMMeterComponent::record_loop_time_(uint32_t loop_started_at) {
 
 uint32_t SEMMeterComponent::get_milliseconds_since_last_valid_frame() const {
   return this->health_.milliseconds_since_last_valid_frame(millis());
+}
+
+void SEMMeterComponent::set_parser_timeout_simulation(bool enabled) {
+  if (!this->watchdog_gate_.set_timeout_simulation_enabled(enabled)) {
+    return;
+  }
+  ESP_LOGI(TAG, "Parser timeout simulation %s",
+           enabled ? "enabled" : "disabled");
 }
 
 void SEMMeterComponent::on_partial_record(size_t offset) {

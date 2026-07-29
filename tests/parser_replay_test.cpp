@@ -41,6 +41,7 @@ using esphome::sem_meter::SEMMeterHealthUpdate;
 using esphome::sem_meter::SEMMeterHealthTracker;
 using esphome::sem_meter::SEMMeterRecordParser;
 using esphome::sem_meter::SEMMeterValidator;
+using esphome::sem_meter::SEMMeterWatchdogGate;
 using esphome::sem_meter::STATUS_IDLE;
 using esphome::sem_meter::ValidationFailureReason;
 using esphome::sem_meter::component_event_to_string;
@@ -749,6 +750,10 @@ void test_yaml_entity_names() {
   expect_true(yaml.find("name: \"SEM Parser Healthy\"") != std::string::npos &&
                   yaml.find("name: \"SEM Diagnostic Status\"") != std::string::npos,
               "parser watchdog Home Assistant diagnostics are missing");
+  expect_true(yaml.find("name: \"Simulate Parser Timeout\"") != std::string::npos &&
+                  yaml.find("id: simulate_parser_timeout") != std::string::npos &&
+                  yaml.find("restore_mode: ALWAYS_OFF") != std::string::npos,
+              "safe parser-timeout simulation switch is missing or restorable");
   std::cout << "[PASS] intentional YAML names preserve Surge Protector and A/C entity identity\n";
 }
 
@@ -1192,6 +1197,67 @@ void test_startup_grace_and_first_frame_recovery() {
   std::cout << "[PASS] startup grace, one-shot failure, recovery duration, and normal boot are correct\n";
 }
 
+void test_parser_timeout_simulation(const std::vector<uint8_t> &frame) {
+  SEMMeterHealthTracker health;
+  SEMMeterWatchdogGate watchdog_gate;
+  ReplaySession parser_session;
+
+  expect_true(!watchdog_gate.timeout_simulation_enabled(),
+              "parser-timeout simulation did not default OFF");
+  health.setup_completed(0);
+  const auto started = watchdog_gate.record_accepted_frame(health, 100);
+  expect_true(started.event == ComponentEvent::UART_STARTED &&
+                  health.last_valid_frame_timestamp_ms() == 100,
+              "accepted frame did not update watchdog with simulation OFF");
+
+  expect_true(watchdog_gate.set_timeout_simulation_enabled(true),
+              "enabling parser-timeout simulation reported no state change");
+  expect_true(watchdog_gate.timeout_simulation_enabled(),
+              "parser-timeout simulation did not remain enabled");
+
+  const auto parsed_while_simulated = parser_session.feed(frame);
+  expect_true(parsed_while_simulated.frames_processed == 1 &&
+                  parsed_while_simulated.decoded_records == RECORD_COUNT,
+              "simulation interrupted normal frame parsing");
+  expect_true(parser_session.accumulator.parser().get_branch_power(1) > 0.0f,
+              "simulation prevented normal electrical output updates");
+  const auto suppressed = watchdog_gate.record_accepted_frame(health, 1000);
+  expect_true(suppressed.event == ComponentEvent::NONE &&
+                  health.last_valid_frame_timestamp_ms() == 100,
+              "simulation updated the watchdog timestamp");
+
+  expect_true(health.check_timeout(100 + DEFAULT_UART_TIMEOUT_MS - 1).event ==
+                  ComponentEvent::NONE,
+              "simulated outage timed out before the configured threshold");
+  const auto timeout = health.check_timeout(100 + DEFAULT_UART_TIMEOUT_MS);
+  expect_true(timeout.event == ComponentEvent::UART_TIMEOUT &&
+                  health.state() == ComponentState::DATA_TIMEOUT,
+              "simulated outage did not produce one timeout transition");
+  expect_true(health.check_timeout(100 + (2 * DEFAULT_UART_TIMEOUT_MS)).event ==
+                  ComponentEvent::NONE,
+              "simulated outage repeated the timeout event");
+
+  expect_true(watchdog_gate.set_timeout_simulation_enabled(false),
+              "disabling parser-timeout simulation reported no state change");
+  const auto parsed_after_simulation = parser_session.feed(frame);
+  expect_true(parsed_after_simulation.frames_processed == 1 &&
+                  parsed_after_simulation.decoded_records == RECORD_COUNT,
+              "parser did not continue after simulation was disabled");
+  const uint32_t recovery_time = 100 + (2 * DEFAULT_UART_TIMEOUT_MS);
+  const auto restored =
+      watchdog_gate.record_accepted_frame(health, recovery_time);
+  expect_true(restored.event == ComponentEvent::UART_RESTORED &&
+                  health.state() == ComponentState::RECEIVING_DATA,
+              "next accepted frame did not restore the simulated outage");
+  expect_true(health.last_completed_outage_duration_ms() ==
+                  recovery_time - 100,
+              "simulated outage duration was incorrect");
+  expect_true(watchdog_gate.record_accepted_frame(health, recovery_time + 100).event ==
+                  ComponentEvent::NONE,
+              "healthy frames repeated the simulated recovery event");
+  std::cout << "[PASS] timeout simulation gates only watchdog accepted-frame notifications\n";
+}
+
 void test_wrap_safe_uart_timeout() {
   SEMMeterHealthTracker health;
   health.setup_completed(0xFFFFFE00U);
@@ -1309,6 +1375,7 @@ int main(int argc, char **argv) {
     test_startup_measurement_readiness();
     test_uart_health_transitions();
     test_startup_grace_and_first_frame_recovery();
+    test_parser_timeout_simulation(frame);
     test_wrap_safe_uart_timeout();
     test_non_recursive_event_dispatch();
     test_retained_overlap(frame);

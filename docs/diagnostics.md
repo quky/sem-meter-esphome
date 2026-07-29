@@ -71,6 +71,7 @@ Meter** before using the examples below.
 | SEM Diagnostic Status | `text_sensor.sem_meter_sem_diagnostic_status` | Text sensor | — | User-facing parser watchdog state | `RECEIVING_DATA` |
 | SEM Last Valid Frame Age | `sensor.sem_meter_sem_last_valid_frame_age` | Sensor | s | Seconds since the most recently accepted frame | Near `0` |
 | SEM Last Parser Outage Duration | `sensor.sem_meter_sem_last_parser_outage_duration` | Sensor | s | Duration of the most recently recovered outage | Last completed duration |
+| Simulate Parser Timeout | `switch.sem_meter_simulate_parser_timeout` | Switch | — | Diagnostic-only watchdog input suppression | `off` |
 | Last Event | `text_sensor.sem_meter_last_event` | Text sensor | — | Latest internal reliability event | Usually `UART_STARTED` or another recent event |
 | WiFi Signal | `sensor.sem_meter_wifi_signal` | Sensor | dBm | Device Wi-Fi signal, independent of SEM UART health | Site dependent |
 
@@ -95,6 +96,44 @@ its local warning still sounds after 30 seconds, and Home Assistant shows
 
 `RECOVERED` remains visible for one diagnostic update interval, then returns to
 `RECEIVING_DATA`.
+
+## Safe parser-timeout simulation
+
+`Simulate Parser Timeout` exists for installed meters whose ESP32 and metering
+controller cannot be powered or disconnected independently. It suppresses only
+the accepted-frame notification sent to the watchdog. UART reception,
+structural parsing, electrical validation, live sensor updates, and daily
+energy processing continue normally.
+
+This switch is diagnostic-only, disabled by default, and configured with
+`restore_mode: ALWAYS_OFF`. It always returns to off after a reboot and cannot
+produce a boot-time simulated outage.
+
+To run the hardware test:
+
+1. In Home Assistant, open the SEM Meter device and enable the disabled
+   `Simulate Parser Timeout` entity.
+2. Confirm `SEM Parser Healthy` is on, the diagnostic status is
+   `RECEIVING_DATA`, and electrical readings are updating.
+3. Turn `Simulate Parser Timeout` on.
+4. Verify electrical measurements continue updating normally.
+5. After the existing 10-second threshold, verify:
+   - `SEM Parser Healthy` turns off.
+   - `SEM Diagnostic Status` becomes `FRAME_TIMEOUT`.
+   - The buzzer plays three warning beeps once.
+   - Last-valid-frame age continues increasing.
+   - The Home Assistant lost-communication automation runs, if configured.
+6. Leave the switch on briefly and confirm the warning does not repeat.
+7. Turn the switch off.
+8. On the next accepted cycle, verify:
+   - Parser health returns on.
+   - One recovery chirp plays.
+   - `RECOVERED` appears for five seconds.
+   - The completed outage duration updates.
+   - Normal readings remain uninterrupted.
+
+Do not leave the simulation enabled after testing. Rebooting is also guaranteed
+to clear it because the switch never restores its previous state.
 
 ## Telegram automation examples
 

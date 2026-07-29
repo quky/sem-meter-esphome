@@ -54,3 +54,6 @@ The executable uses only the C++ standard library. Its replay coverage includes:
 - One-shot parser timeout and recovery transitions
 - Completed outage-duration tracking
 - No recovery event for the first valid frame during a normal boot
+- Watchdog-only timeout simulation that defaults off
+- Continued parser and electrical-output updates during simulation
+- One-shot simulated timeout, recovery, and outage-duration tracking

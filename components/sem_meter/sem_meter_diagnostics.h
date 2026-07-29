@@ -260,6 +260,32 @@ class SEMMeterHealthTracker {
   bool has_completed_outage_{false};
 };
 
+class SEMMeterWatchdogGate {
+ public:
+  bool set_timeout_simulation_enabled(bool enabled) {
+    if (this->timeout_simulation_enabled_ == enabled) {
+      return false;
+    }
+    this->timeout_simulation_enabled_ = enabled;
+    return true;
+  }
+
+  bool timeout_simulation_enabled() const {
+    return this->timeout_simulation_enabled_;
+  }
+
+  SEMMeterHealthUpdate record_accepted_frame(SEMMeterHealthTracker &health,
+                                              uint32_t timestamp_ms) const {
+    if (this->timeout_simulation_enabled_) {
+      return {health.state(), health.state(), ComponentEvent::NONE, 0};
+    }
+    return health.record_valid_frame(timestamp_ms);
+  }
+
+ private:
+  bool timeout_simulation_enabled_{false};
+};
+
 struct TimingStatistics {
   uint32_t minimum_microseconds{0};
   uint32_t maximum_microseconds{0};

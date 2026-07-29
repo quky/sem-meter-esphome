@@ -22,6 +22,7 @@ tasks.
 - ESPHome API, OTA updates, web server, Wi-Fi diagnostics, and restart control
 - GPIO41 passive-buzzer support using LEDC/PWM and RTTTL
 - One-shot parser timeout and recovery alerts with a 30-second startup grace
+- Safe, always-off-after-reboot parser-timeout simulation for installed-system testing
 - Fixed-capacity 447-byte UART frame accumulation
 - Support for `0xFF`, captured-fixture `0x3B`, and live-stream `0x3C` record markers
 - Host-side captured-frame, recovery, diagnostics, and AddressSanitizer tests
@@ -46,7 +47,8 @@ transition and never repeat continuously.
 
 Home Assistant—not ESPHome—owns Telegram delivery. See the
 [parser watchdog and notification guide](docs/diagnostics.md) for entity
-semantics, complete lost/restored automation examples, and troubleshooting.
+semantics, the safe timeout-simulation procedure, complete lost/restored
+automation examples, and troubleshooting.
 
 ## Sensor value validation
 

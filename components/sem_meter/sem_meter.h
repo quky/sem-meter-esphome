@@ -135,6 +135,10 @@ class SEMMeterComponent final : public Component,
   uint32_t get_last_completed_outage_duration_ms() const {
     return this->health_.last_completed_outage_duration_ms();
   }
+  void set_parser_timeout_simulation(bool enabled);
+  bool get_parser_timeout_simulation() const {
+    return this->watchdog_gate_.timeout_simulation_enabled();
+  }
   uint64_t get_rejected_sensor_values() const {
     return this->validator_.rejected_sensor_values();
   }
@@ -198,6 +202,7 @@ class SEMMeterComponent final : public Component,
   SEMMeterFrameAccumulator accumulator_{};
   SEMMeterDiagnostics diagnostics_{};
   SEMMeterHealthTracker health_{};
+  SEMMeterWatchdogGate watchdog_gate_{};
   SEMMeterEventDispatcher event_dispatcher_{};
   SEMMeterValidator validator_{};
   SEMMeterValidator cycle_validator_{};

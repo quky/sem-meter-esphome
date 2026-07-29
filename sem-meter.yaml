@@ -210,6 +210,18 @@ sem_meter:
 
 switch:
   - platform: template
+    name: "Simulate Parser Timeout"
+    id: simulate_parser_timeout
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    disabled_by_default: true
+    entity_category: diagnostic
+    turn_on_action:
+      - lambda: id(sem_meter_parser).set_parser_timeout_simulation(true);
+    turn_off_action:
+      - lambda: id(sem_meter_parser).set_parser_timeout_simulation(false);
+
+  - platform: template
     name: "${circuit_1_name} Enabled"
     id: circuit_1_enabled
     optimistic: true
