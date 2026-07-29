@@ -95,6 +95,20 @@ output:
 
 rtttl:
   output: buzzer_output
+  gain: 30%
+
+script:
+  # Three short warning tones, played once when parser communication is lost.
+  - id: buzzer_parser_lost
+    mode: single
+    then:
+      - rtttl.play: "parser lost:d=16,o=6,b=120:c,p,c,p,c"
+
+  # One short positive chirp, played once when parser communication recovers.
+  - id: buzzer_parser_recovered
+    mode: single
+    then:
+      - rtttl.play: "parser recovered:d=16,o=6,b=160:g"
 
 text_sensor:
   - platform: wifi_info
@@ -134,6 +148,37 @@ sem_meter:
     disabled_by_default: false
   last_event:
     name: "Last Event"
+    disabled_by_default: false
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: return x == "UART_TIMEOUT";
+            then:
+              - script.execute: buzzer_parser_lost
+            else:
+              - if:
+                  condition:
+                    lambda: return x == "UART_RESTORED";
+                  then:
+                    - script.execute: buzzer_parser_recovered
+  startup_grace_period: 30s
+  uart_timeout: 10s
+  sem_parser_healthy:
+    name: "SEM Parser Healthy"
+    id: sem_parser_healthy
+    disabled_by_default: false
+  sem_diagnostic_status:
+    name: "SEM Diagnostic Status"
+    id: sem_diagnostic_status
+    disabled_by_default: false
+  sem_last_valid_frame_age:
+    name: "SEM Last Valid Frame Age"
+    id: sem_last_valid_frame_age
+    disabled_by_default: false
+  sem_last_parser_outage_duration:
+    name: "SEM Last Parser Outage Duration"
+    id: sem_last_parser_outage_duration
     disabled_by_default: false
   milliseconds_since_last_frame:
     name: "Milliseconds Since Last Frame"

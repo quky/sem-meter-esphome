@@ -15,6 +15,7 @@
 namespace esphome::sem_meter {
 
 inline constexpr uint32_t DIAGNOSTIC_PUBLISH_INTERVAL_MS = 5000;
+inline constexpr uint32_t WATCHDOG_EVALUATION_INTERVAL_MS = 1000;
 
 class SEMMeterComponent final : public Component,
                                 public uart::UARTDevice,
@@ -79,6 +80,18 @@ class SEMMeterComponent final : public Component,
   void set_rejected_samples_sensor(sensor::Sensor *sensor) {
     this->rejected_samples_sensor_ = sensor;
   }
+  void set_sem_parser_healthy_binary_sensor(binary_sensor::BinarySensor *sensor) {
+    this->sem_parser_healthy_binary_sensor_ = sensor;
+  }
+  void set_sem_diagnostic_status_text_sensor(text_sensor::TextSensor *sensor) {
+    this->sem_diagnostic_status_text_sensor_ = sensor;
+  }
+  void set_sem_last_valid_frame_age_sensor(sensor::Sensor *sensor) {
+    this->sem_last_valid_frame_age_sensor_ = sensor;
+  }
+  void set_sem_last_parser_outage_duration_sensor(sensor::Sensor *sensor) {
+    this->sem_last_parser_outage_duration_sensor_ = sensor;
+  }
 
   float get_branch_power(size_t index) const { return this->accumulator_.parser().get_branch_power(index); }
   float get_phase_a_power() const { return this->accumulator_.parser().get_phase_a_power(); }
@@ -108,6 +121,20 @@ class SEMMeterComponent final : public Component,
   }
   void set_uart_timeout_ms(uint32_t timeout_ms) { this->health_.set_uart_timeout_ms(timeout_ms); }
   uint32_t get_uart_timeout_ms() const { return this->health_.uart_timeout_ms(); }
+  void set_startup_grace_period_ms(uint32_t grace_period_ms) {
+    this->health_.set_startup_grace_period_ms(grace_period_ms);
+  }
+  uint32_t get_startup_grace_period_ms() const {
+    return this->health_.startup_grace_period_ms();
+  }
+  bool has_received_valid_frame() const { return this->health_.has_received_valid_frame(); }
+  bool get_parser_watchdog_failed() const { return this->health_.watchdog_failed(); }
+  uint32_t get_current_outage_started_timestamp_ms() const {
+    return this->health_.current_outage_started_timestamp_ms();
+  }
+  uint32_t get_last_completed_outage_duration_ms() const {
+    return this->health_.last_completed_outage_duration_ms();
+  }
   uint64_t get_rejected_sensor_values() const {
     return this->validator_.rejected_sensor_values();
   }
@@ -156,8 +183,10 @@ class SEMMeterComponent final : public Component,
  protected:
   void apply_health_update_(const SEMMeterHealthUpdate &update);
   bool dispatch_event_(ComponentEvent event, uint32_t timestamp_ms);
-  void publish_immediate_diagnostics_();
+  void publish_immediate_diagnostics_(ComponentEvent transition_event = ComponentEvent::NONE);
   void publish_rejection_diagnostics_();
+  void evaluate_watchdog_(uint32_t timestamp_ms);
+  const char *diagnostic_status_(ComponentEvent transition_event) const;
   void update_measurement_readiness_(uint8_t record_id);
   bool all_measurements_ready_(MeasurementId first, MeasurementId last) const;
   void publish_periodic_diagnostics_(uint32_t timestamp_ms);
@@ -185,7 +214,15 @@ class SEMMeterComponent final : public Component,
   text_sensor::TextSensor *last_rejection_reason_text_sensor_{nullptr};
   sensor::Sensor *last_rejected_value_sensor_{nullptr};
   sensor::Sensor *rejected_samples_sensor_{nullptr};
+  binary_sensor::BinarySensor *sem_parser_healthy_binary_sensor_{nullptr};
+  text_sensor::TextSensor *sem_diagnostic_status_text_sensor_{nullptr};
+  sensor::Sensor *sem_last_valid_frame_age_sensor_{nullptr};
+  sensor::Sensor *sem_last_parser_outage_duration_sensor_{nullptr};
   uint32_t last_diagnostic_publish_ms_{0};
+  uint32_t last_watchdog_evaluation_ms_{0};
+  uint32_t recovered_status_timestamp_ms_{0};
+  bool recovered_status_active_{false};
+  bool waiting_status_published_{false};
 };
 
 }  // namespace esphome::sem_meter

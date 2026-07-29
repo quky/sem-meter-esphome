@@ -18,6 +18,7 @@ namespace {
 using esphome::sem_meter::COMPLETE_FRAME_SIZE;
 using esphome::sem_meter::ComponentEvent;
 using esphome::sem_meter::ComponentState;
+using esphome::sem_meter::DEFAULT_STARTUP_GRACE_PERIOD_MS;
 using esphome::sem_meter::DEFAULT_UART_TIMEOUT_MS;
 using esphome::sem_meter::MARKER_PRIMARY;
 using esphome::sem_meter::MARKER_SECONDARY;
@@ -738,6 +739,16 @@ void test_yaml_entity_names() {
               "A/C fraction-slash spelling changed");
   expect_true(yaml.find("circuit_13_name: A/C") == std::string::npos,
               "literal A/C spelling would trigger ESPHome naming warnings");
+  expect_true(yaml.find("pin: GPIO41") != std::string::npos,
+              "confirmed GPIO41 buzzer output is missing");
+  expect_true(yaml.find("GPIO21") == std::string::npos,
+              "unsupported GPIO21 buzzer configuration returned");
+  expect_true(yaml.find("id: buzzer_parser_lost") != std::string::npos &&
+                  yaml.find("id: buzzer_parser_recovered") != std::string::npos,
+              "centralized parser watchdog buzzer scripts are missing");
+  expect_true(yaml.find("name: \"SEM Parser Healthy\"") != std::string::npos &&
+                  yaml.find("name: \"SEM Diagnostic Status\"") != std::string::npos,
+              "parser watchdog Home Assistant diagnostics are missing");
   std::cout << "[PASS] intentional YAML names preserve Surge Protector and A/C entity identity\n";
 }
 
@@ -1035,6 +1046,8 @@ void test_uart_health_transitions() {
   expect_true(dispatcher.listener_count() == 1, "listener count was not bounded to one");
   expect_true(health.uart_timeout_ms() == DEFAULT_UART_TIMEOUT_MS,
               "health tracker did not use the default 10-second timeout");
+  expect_true(health.startup_grace_period_ms() == DEFAULT_STARTUP_GRACE_PERIOD_MS,
+              "health tracker did not use the default 30-second startup grace period");
   expect_true(!health.uart_healthy(), "UART was healthy before a valid frame");
   expect_true(!health.sem_meter_healthy(), "SEM Meter was healthy before a valid frame");
 
@@ -1094,6 +1107,9 @@ void test_uart_health_transitions() {
               "restored UART did not transition to RECEIVING_DATA");
   expect_true(health.uart_healthy(), "UART was not healthy after restoration");
   expect_true(health.sem_meter_healthy(), "SEM Meter was not healthy after restoration");
+  expect_true(health.has_completed_outage(), "restored UART did not retain completed outage state");
+  expect_true(health.last_completed_outage_duration_ms() == 20100,
+              "completed UART outage duration was incorrect");
   expect_true(dispatcher.event_count() == 4, "UART_RESTORED did not increment the event counter once");
 
   const auto continued_restored = health.record_valid_frame(20500);
@@ -1139,6 +1155,43 @@ void test_uart_health_transitions() {
   std::cout << "[PASS] bounded listener dispatch, ordering, state, and anti-spam behavior are correct\n";
 }
 
+void test_startup_grace_and_first_frame_recovery() {
+  SEMMeterHealthTracker health;
+  health.setup_completed(1000);
+
+  expect_true(health.check_timeout(1000 + DEFAULT_STARTUP_GRACE_PERIOD_MS - 1).event ==
+                  ComponentEvent::NONE,
+              "startup watchdog fired before the 30-second grace period");
+  const auto timeout =
+      health.check_timeout(1000 + DEFAULT_STARTUP_GRACE_PERIOD_MS);
+  expect_true(timeout.event == ComponentEvent::UART_TIMEOUT &&
+                  health.state() == ComponentState::DATA_TIMEOUT,
+              "missing first frame did not cause one startup timeout");
+  expect_true(!health.has_received_valid_frame(),
+              "startup timeout fabricated a valid-frame timestamp");
+  expect_true(health.check_timeout(1000 + DEFAULT_STARTUP_GRACE_PERIOD_MS + 5000).event ==
+                  ComponentEvent::NONE,
+              "continued startup outage repeated the timeout event");
+
+  const uint32_t recovery_time = 1000 + DEFAULT_STARTUP_GRACE_PERIOD_MS + 7500;
+  const auto restored = health.record_valid_frame(recovery_time);
+  expect_true(restored.event == ComponentEvent::UART_RESTORED &&
+                  health.state() == ComponentState::RECEIVING_DATA,
+              "first valid frame after a declared startup failure did not restore health");
+  expect_true(health.last_completed_outage_duration_ms() == 7500,
+              "startup outage duration was not retained");
+  expect_true(health.record_valid_frame(recovery_time + 100).event == ComponentEvent::NONE,
+              "healthy data repeated startup recovery");
+
+  SEMMeterHealthTracker normal_boot;
+  normal_boot.setup_completed(0);
+  expect_true(normal_boot.record_valid_frame(500).event == ComponentEvent::UART_STARTED,
+              "normal first frame incorrectly produced a recovery event");
+  expect_true(!normal_boot.has_completed_outage(),
+              "normal boot fabricated a completed outage");
+  std::cout << "[PASS] startup grace, one-shot failure, recovery duration, and normal boot are correct\n";
+}
+
 void test_wrap_safe_uart_timeout() {
   SEMMeterHealthTracker health;
   health.setup_completed(0xFFFFFE00U);
@@ -1150,6 +1203,14 @@ void test_wrap_safe_uart_timeout() {
               "millis wrap prevented UART timeout");
   expect_true(health.milliseconds_since_last_valid_frame(timeout_time) == DEFAULT_UART_TIMEOUT_MS,
               "millis wrap produced an incorrect elapsed time");
+
+  SEMMeterHealthTracker startup_health;
+  const uint32_t setup_time = 0xFFFFFF00U;
+  startup_health.setup_completed(setup_time);
+  expect_true(startup_health.check_timeout(
+                  setup_time + DEFAULT_STARTUP_GRACE_PERIOD_MS).event ==
+                  ComponentEvent::UART_TIMEOUT,
+              "millis wrap prevented startup-grace timeout");
   std::cout << "[PASS] UART timeout arithmetic remains wrap-safe\n";
 }
 
@@ -1247,6 +1308,7 @@ int main(int argc, char **argv) {
     test_sensor_value_validation();
     test_startup_measurement_readiness();
     test_uart_health_transitions();
+    test_startup_grace_and_first_frame_recovery();
     test_wrap_safe_uart_timeout();
     test_non_recursive_event_dispatch();
     test_retained_overlap(frame);

@@ -19,12 +19,18 @@ The local `sem_meter` component separates responsibilities:
 | --- | --- |
 | `sem_meter_parser.h` | ESPHome-independent record validation and field decoding |
 | `sem_meter_accumulator.h` | Fixed-capacity stream accumulation and bounded frame processing |
-| `sem_meter_diagnostics.h` | Counters, timing, health state, and bounded event dispatch |
+| `sem_meter_diagnostics.h` | Counters, timing, parser-watchdog state, outage duration, and bounded event dispatch |
 | `sem_meter.h/.cpp` | UART integration, loop budgets, logging, and component getters |
 | `__init__.py` | ESPHome schema, UART registration, and configurable calibration |
 
 The YAML defines entities and calls read-only component getters. Parser and
 accumulator code do not publish entities directly.
+
+The parser watchdog is updated only by a transactionally accepted measurement
+cycle. It evaluates health once per second, while YAML listens to its
+one-shot timeout and restoration events to run centralized GPIO41 buzzer
+scripts. See [the diagnostics guide](diagnostics.md) for entity semantics and
+Home Assistant notification examples.
 
 ## Behavioral invariants
 
@@ -33,7 +39,7 @@ Do not change these without captured-data evidence and a migration plan:
 - UART RX GPIO39, 115200 baud, 8N1
 - Complete frame size of 447 bytes
 - Transport chunks of 150, 150, and 147 bytes
-- Both `0xFF` and `0x3B` record markers
+- `0xFF`, captured-fixture `0x3B`, and live-stream `0x3C` record markers
 - Existing record IDs, statuses, field offsets, and calibration divisors
 - Entity names, IDs, units, circuit mappings, and energy sensors
 - `MAX_BYTES_PER_LOOP = 128`

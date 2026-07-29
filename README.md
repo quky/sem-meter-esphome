@@ -20,8 +20,10 @@ tasks.
 - Daily energy sensors for every branch and total main power
 - Per-circuit enable and 240 V multiplier switches
 - ESPHome API, OTA updates, web server, Wi-Fi diagnostics, and restart control
+- GPIO41 passive-buzzer support using LEDC/PWM and RTTTL
+- One-shot parser timeout and recovery alerts with a 30-second startup grace
 - Fixed-capacity 447-byte UART frame accumulation
-- Support for both `0xFF` and `0x3B` record markers
+- Support for `0xFF`, captured-fixture `0x3B`, and live-stream `0x3C` record markers
 - Host-side captured-frame, recovery, diagnostics, and AddressSanitizer tests
 - Internal bounded event interface ready for future notification listeners
 
@@ -35,6 +37,16 @@ by default and update every five seconds.
 
 Health, state, and last-event entities publish immediately when a real state or
 event transition occurs. The YAML does not duplicate parser or timeout logic.
+
+Production watchdog entities add `SEM Parser Healthy`, `SEM Diagnostic Status`,
+`SEM Last Valid Frame Age`, and `SEM Last Parser Outage Duration`. The watchdog
+allows 30 seconds for startup synchronization, then requires an accepted frame
+at least every 10 seconds. Its buzzer alerts occur once per failure or recovery
+transition and never repeat continuously.
+
+Home Assistant—not ESPHome—owns Telegram delivery. See the
+[parser watchdog and notification guide](docs/diagnostics.md) for entity
+semantics, complete lost/restored automation examples, and troubleshooting.
 
 ## Sensor value validation
 
@@ -69,6 +81,7 @@ Rejected Value` remains unavailable rather than publishing a fabricated zero.
 | Wi-Fi module | ESP32-S3-WROOM-1U |
 | Metering controller | AT32F421 |
 | Meter UART RX | ESP32 GPIO39 |
+| Onboard buzzer | Passive buzzer on ESP32 GPIO41; LEDC/PWM required |
 | UART format | 115200 baud, 8 data bits, no parity, 1 stop bit |
 | Flash size | 16 MB |
 | Antenna | External 2.4 GHz antenna required for the `-1U` module |
@@ -134,6 +147,7 @@ before connecting a programmer.
 ## Documentation
 
 - [Developer guide](docs/development.md)
+- [Parser watchdog and notifications](docs/diagnostics.md)
 - [Hardware guide](docs/hardware.md)
 - [Programming reference](docs/programming-reference.md)
 - [Flashing guide](docs/flashing.md)
@@ -186,11 +200,15 @@ GitHub and must not be used for experiments.
 
 ## Troubleshooting
 
-- Missing Phase B usually means `0x3B` records are being ignored.
+- Missing Phase B usually means secondary-marker records (`0x3B` or live
+  `0x3C`) are being ignored.
 - Missing records can result from parsing 150/150/147 transport chunks
   independently.
 - Weak or unavailable Wi-Fi can result from operating the
   ESP32-S3-WROOM-1U without its required external antenna.
+- `FRAME_TIMEOUT` means accepted SEM frames have stopped. Last-good electrical
+  values may remain visible until parser communication recovers.
+- Wi-Fi/API connectivity and SEM UART/parser health are independent.
 - A device that appears not to boot may simply contain placeholder Wi-Fi
   credentials. Check `secrets.yaml` before assuming a hardware failure.
 

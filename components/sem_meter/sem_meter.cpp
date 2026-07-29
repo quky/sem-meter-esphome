@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cinttypes>
+#include <cmath>
 
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
@@ -15,6 +16,7 @@ void SEMMeterComponent::setup() {
   ESP_LOGI(TAG, "SEM Meter parser started");
   const uint32_t now = millis();
   this->last_diagnostic_publish_ms_ = now;
+  this->last_watchdog_evaluation_ms_ = now;
   this->apply_health_update_(this->health_.setup_completed(now));
   this->publish_rejection_diagnostics_();
 }
@@ -31,7 +33,7 @@ void SEMMeterComponent::loop() {
     if (!this->read_array(incoming.data(), bytes_to_read)) {
       ESP_LOGW(TAG, "UART read failed; preserving %zu buffered bytes", this->accumulator_.buffered_size());
       const uint32_t now = millis();
-      this->apply_health_update_(this->health_.check_timeout(now));
+      this->evaluate_watchdog_(now);
       this->publish_periodic_diagnostics_(now);
       this->record_loop_time_(loop_started_at);
       return;
@@ -62,7 +64,7 @@ void SEMMeterComponent::loop() {
              measurement_unit_to_string(result.rejected_measurement),
              validation_failure_reason_to_string(result.rejection_reason));
     if (this->dispatch_event_(ComponentEvent::INVALID_SENSOR_VALUE, now)) {
-      this->publish_immediate_diagnostics_();
+      this->publish_immediate_diagnostics_(ComponentEvent::INVALID_SENSOR_VALUE);
     }
     this->publish_rejection_diagnostics_();
   }
@@ -72,7 +74,7 @@ void SEMMeterComponent::loop() {
   if (result.frames_processed > 0 && result.decoded_records > 0) {
     this->apply_health_update_(this->health_.record_valid_frame(now));
   }
-  this->apply_health_update_(this->health_.check_timeout(now));
+  this->evaluate_watchdog_(now);
   this->publish_periodic_diagnostics_(now);
 
   this->record_loop_time_(loop_started_at);
@@ -86,7 +88,7 @@ void SEMMeterComponent::apply_health_update_(const SEMMeterHealthUpdate &update)
 
   const bool event_dispatched = this->dispatch_event_(update.event, update.timestamp_ms);
   if (update.state_changed() || event_dispatched) {
-    this->publish_immediate_diagnostics_();
+    this->publish_immediate_diagnostics_(update.event);
   }
 }
 
@@ -105,7 +107,13 @@ bool SEMMeterComponent::dispatch_event_(ComponentEvent event, uint32_t timestamp
       ESP_LOGI(TAG, "UART data started");
       break;
     case ComponentEvent::UART_TIMEOUT:
-      ESP_LOGW(TAG, "UART valid-frame timeout after %" PRIu32 " ms", this->health_.uart_timeout_ms());
+      if (this->health_.has_received_valid_frame()) {
+        ESP_LOGW(TAG, "UART valid-frame timeout after %" PRIu32 " ms",
+                 this->health_.uart_timeout_ms());
+      } else {
+        ESP_LOGW(TAG, "No valid SEM frame received during %" PRIu32 " ms startup grace period",
+                 this->health_.startup_grace_period_ms());
+      }
       break;
     case ComponentEvent::UART_RESTORED:
       ESP_LOGI(TAG, "UART data restored");
@@ -138,13 +146,51 @@ optional<float> SEMMeterComponent::validate_sensor_value(MeasurementId measureme
            measurement_id_to_string(measurement), value, measurement_unit_to_string(measurement),
            validation_failure_reason_to_string(result.reason));
   if (this->dispatch_event_(ComponentEvent::INVALID_SENSOR_VALUE, now)) {
-    this->publish_immediate_diagnostics_();
+    this->publish_immediate_diagnostics_(ComponentEvent::INVALID_SENSOR_VALUE);
   }
   this->publish_rejection_diagnostics_();
   return {};
 }
 
-void SEMMeterComponent::publish_immediate_diagnostics_() {
+const char *SEMMeterComponent::diagnostic_status_(ComponentEvent transition_event) const {
+  if (transition_event == ComponentEvent::SYSTEM_STARTED) {
+    return "STARTING";
+  }
+  if (transition_event == ComponentEvent::UART_RESTORED) {
+    return "RECOVERED";
+  }
+
+  switch (this->health_.state()) {
+    case ComponentState::BOOTING:
+      return "STARTING";
+    case ComponentState::WAITING_FOR_UART:
+      return "WAITING_FOR_FIRST_FRAME";
+    case ComponentState::RECEIVING_DATA:
+      return "RECEIVING_DATA";
+    case ComponentState::DATA_TIMEOUT:
+    case ComponentState::RECOVERING:
+      return "FRAME_TIMEOUT";
+  }
+  return "UNKNOWN";
+}
+
+void SEMMeterComponent::publish_immediate_diagnostics_(ComponentEvent transition_event) {
+  const bool health_transition =
+      transition_event == ComponentEvent::NONE ||
+      transition_event == ComponentEvent::SYSTEM_STARTED ||
+      transition_event == ComponentEvent::UART_STARTED ||
+      transition_event == ComponentEvent::UART_TIMEOUT ||
+      transition_event == ComponentEvent::UART_RESTORED;
+
+  if (transition_event == ComponentEvent::UART_RESTORED) {
+    this->recovered_status_timestamp_ms_ = millis();
+    this->recovered_status_active_ = true;
+  } else if (transition_event == ComponentEvent::UART_TIMEOUT) {
+    this->recovered_status_active_ = false;
+  } else if (transition_event == ComponentEvent::SYSTEM_STARTED) {
+    this->waiting_status_published_ = false;
+  }
+
   if (this->sem_meter_healthy_binary_sensor_ != nullptr) {
     this->sem_meter_healthy_binary_sensor_->publish_state(this->health_.sem_meter_healthy());
   }
@@ -157,6 +203,21 @@ void SEMMeterComponent::publish_immediate_diagnostics_() {
   if (this->last_event_text_sensor_ != nullptr) {
     this->last_event_text_sensor_->publish_state(component_event_to_string(this->event_dispatcher_.last_event()));
   }
+  if (health_transition && this->sem_diagnostic_status_text_sensor_ != nullptr) {
+    this->sem_diagnostic_status_text_sensor_->publish_state(
+        this->diagnostic_status_(transition_event));
+  }
+  if (transition_event == ComponentEvent::UART_RESTORED &&
+      this->sem_last_parser_outage_duration_sensor_ != nullptr &&
+      this->health_.has_completed_outage()) {
+    this->sem_last_parser_outage_duration_sensor_->publish_state(
+        static_cast<float>(this->health_.last_completed_outage_duration_ms()) / 1000.0f);
+  }
+  // Publish the automation trigger last so Home Assistant sees the associated
+  // status, event, and outage duration before reacting to the health change.
+  if (health_transition && this->sem_parser_healthy_binary_sensor_ != nullptr) {
+    this->sem_parser_healthy_binary_sensor_->publish_state(this->health_.sem_meter_healthy());
+  }
 }
 
 void SEMMeterComponent::publish_periodic_diagnostics_(uint32_t timestamp_ms) {
@@ -168,6 +229,31 @@ void SEMMeterComponent::publish_periodic_diagnostics_(uint32_t timestamp_ms) {
   if (this->milliseconds_since_last_frame_sensor_ != nullptr) {
     this->milliseconds_since_last_frame_sensor_->publish_state(
         static_cast<float>(this->health_.milliseconds_since_last_valid_frame(timestamp_ms)));
+  }
+  if (this->sem_diagnostic_status_text_sensor_ != nullptr) {
+    const bool hold_recovered_status =
+        this->recovered_status_active_ &&
+        timestamp_ms - this->recovered_status_timestamp_ms_ <
+            DIAGNOSTIC_PUBLISH_INTERVAL_MS;
+    if (this->recovered_status_active_ && !hold_recovered_status) {
+      this->recovered_status_active_ = false;
+      this->sem_diagnostic_status_text_sensor_->publish_state(
+          this->diagnostic_status_(ComponentEvent::NONE));
+    } else if (this->health_.state() == ComponentState::WAITING_FOR_UART &&
+               !this->waiting_status_published_) {
+      this->waiting_status_published_ = true;
+      this->sem_diagnostic_status_text_sensor_->publish_state(
+          "WAITING_FOR_FIRST_FRAME");
+    }
+  }
+  if (this->sem_last_valid_frame_age_sensor_ != nullptr) {
+    if (this->health_.has_received_valid_frame()) {
+      this->sem_last_valid_frame_age_sensor_->publish_state(
+          static_cast<float>(this->health_.milliseconds_since_last_valid_frame(timestamp_ms)) /
+          1000.0f);
+    } else {
+      this->sem_last_valid_frame_age_sensor_->publish_state(NAN);
+    }
   }
   if (this->frames_processed_sensor_ != nullptr) {
     this->frames_processed_sensor_->publish_state(
@@ -235,6 +321,15 @@ void SEMMeterComponent::on_decoded_record(size_t, uint8_t marker, uint8_t record
   ESP_LOGV(TAG, "Decoded record 0x%02X with marker 0x%02X and status 0x%02X", record_id, marker, status);
 }
 
+void SEMMeterComponent::evaluate_watchdog_(uint32_t timestamp_ms) {
+  if (timestamp_ms - this->last_watchdog_evaluation_ms_ <
+      WATCHDOG_EVALUATION_INTERVAL_MS) {
+    return;
+  }
+  this->last_watchdog_evaluation_ms_ = timestamp_ms;
+  this->apply_health_update_(this->health_.check_timeout(timestamp_ms));
+}
+
 bool SEMMeterComponent::all_measurements_ready_(MeasurementId first, MeasurementId last) const {
   for (uint8_t raw = static_cast<uint8_t>(first); raw <= static_cast<uint8_t>(last); raw++) {
     if (!this->validator_.measurement_ready(static_cast<MeasurementId>(raw))) {
@@ -285,6 +380,8 @@ void SEMMeterComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "  Maximum frames per loop: %zu", MAX_FRAMES_PER_LOOP);
   ESP_LOGCONFIG(TAG, "  Receive buffer capacity: %zu bytes", MAX_BUFFER_SIZE);
   ESP_LOGCONFIG(TAG, "  UART valid-frame timeout: %" PRIu32 " ms", this->health_.uart_timeout_ms());
+  ESP_LOGCONFIG(TAG, "  Startup grace period: %" PRIu32 " ms",
+                this->health_.startup_grace_period_ms());
   ESP_LOGCONFIG(TAG, "  Record markers: 0x%02X, 0x%02X, 0x%02X", MARKER_PRIMARY,
                 MARKER_SECONDARY, MARKER_LIVE_SECONDARY);
   ESP_LOGCONFIG(TAG, "  Branch power divisor: %.3f", this->accumulator_.parser().get_branch_power_divisor());

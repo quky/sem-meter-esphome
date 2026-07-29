@@ -50,3 +50,7 @@ The executable uses only the C++ standard library. Its replay coverage includes:
 - Line frequency
 - Idle Phase C power
 - An explicit active-to-idle power reset
+- A 30-second first-frame startup grace period
+- One-shot parser timeout and recovery transitions
+- Completed outage-duration tracking
+- No recovery event for the first valid frame during a normal boot

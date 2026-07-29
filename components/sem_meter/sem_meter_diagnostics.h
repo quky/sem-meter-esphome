@@ -67,6 +67,7 @@ inline bool sem_meter_is_healthy(ComponentState state, bool uart_healthy) {
 }
 
 inline constexpr uint32_t DEFAULT_UART_TIMEOUT_MS = 10000;
+inline constexpr uint32_t DEFAULT_STARTUP_GRACE_PERIOD_MS = 30000;
 inline constexpr size_t MAX_EVENT_LISTENERS = 1;
 
 class SEMMeterEventListener {
@@ -126,18 +127,30 @@ struct SEMMeterHealthUpdate {
 
 class SEMMeterHealthTracker {
  public:
-  explicit SEMMeterHealthTracker(uint32_t uart_timeout_ms = DEFAULT_UART_TIMEOUT_MS)
-      : uart_timeout_ms_(uart_timeout_ms) {}
+  explicit SEMMeterHealthTracker(
+      uint32_t uart_timeout_ms = DEFAULT_UART_TIMEOUT_MS,
+      uint32_t startup_grace_period_ms = DEFAULT_STARTUP_GRACE_PERIOD_MS)
+      : uart_timeout_ms_(uart_timeout_ms),
+        startup_grace_period_ms_(startup_grace_period_ms) {}
 
   SEMMeterHealthUpdate setup_completed(uint32_t timestamp_ms) {
     if (this->state_ != ComponentState::BOOTING) {
       return this->no_change_();
     }
+    this->setup_timestamp_ms_ = timestamp_ms;
+    this->setup_completed_ = true;
     return this->transition_(ComponentState::WAITING_FOR_UART, ComponentEvent::SYSTEM_STARTED,
                              timestamp_ms);
   }
 
   SEMMeterHealthUpdate record_valid_frame(uint32_t timestamp_ms) {
+    const bool recovering_from_timeout = this->state_ == ComponentState::DATA_TIMEOUT;
+    if (recovering_from_timeout) {
+      this->last_completed_outage_duration_ms_ =
+          timestamp_ms - this->current_outage_started_timestamp_ms_;
+      this->has_completed_outage_ = true;
+    }
+
     this->last_valid_frame_timestamp_ms_ = timestamp_ms;
     this->has_received_valid_frame_ = true;
 
@@ -146,7 +159,7 @@ class SEMMeterHealthTracker {
       return this->transition_(ComponentState::RECEIVING_DATA, ComponentEvent::UART_STARTED,
                                timestamp_ms);
     }
-    if (this->state_ == ComponentState::DATA_TIMEOUT) {
+    if (recovering_from_timeout) {
       return this->transition_(ComponentState::RECEIVING_DATA, ComponentEvent::UART_RESTORED,
                                timestamp_ms);
     }
@@ -157,6 +170,17 @@ class SEMMeterHealthTracker {
   }
 
   SEMMeterHealthUpdate check_timeout(uint32_t timestamp_ms) {
+    if (this->state_ == ComponentState::WAITING_FOR_UART && this->setup_completed_ &&
+        !this->has_received_valid_frame_) {
+      const uint32_t startup_elapsed_ms = timestamp_ms - this->setup_timestamp_ms_;
+      if (startup_elapsed_ms < this->startup_grace_period_ms_) {
+        return this->no_change_();
+      }
+      this->current_outage_started_timestamp_ms_ = timestamp_ms;
+      return this->transition_(ComponentState::DATA_TIMEOUT, ComponentEvent::UART_TIMEOUT,
+                               timestamp_ms);
+    }
+
     if (this->state_ != ComponentState::RECEIVING_DATA || !this->has_received_valid_frame_) {
       return this->no_change_();
     }
@@ -165,6 +189,7 @@ class SEMMeterHealthTracker {
     if (elapsed_ms < this->uart_timeout_ms_) {
       return this->no_change_();
     }
+    this->current_outage_started_timestamp_ms_ = this->last_valid_frame_timestamp_ms_;
     return this->transition_(ComponentState::DATA_TIMEOUT, ComponentEvent::UART_TIMEOUT,
                              timestamp_ms);
   }
@@ -178,10 +203,23 @@ class SEMMeterHealthTracker {
   }
 
   void set_uart_timeout_ms(uint32_t uart_timeout_ms) { this->uart_timeout_ms_ = uart_timeout_ms; }
+  void set_startup_grace_period_ms(uint32_t startup_grace_period_ms) {
+    this->startup_grace_period_ms_ = startup_grace_period_ms;
+  }
 
   ComponentState state() const { return this->state_; }
   uint32_t last_valid_frame_timestamp_ms() const { return this->last_valid_frame_timestamp_ms_; }
   uint32_t uart_timeout_ms() const { return this->uart_timeout_ms_; }
+  uint32_t startup_grace_period_ms() const { return this->startup_grace_period_ms_; }
+  uint32_t current_outage_started_timestamp_ms() const {
+    return this->current_outage_started_timestamp_ms_;
+  }
+  uint32_t last_completed_outage_duration_ms() const {
+    return this->last_completed_outage_duration_ms_;
+  }
+  bool has_received_valid_frame() const { return this->has_received_valid_frame_; }
+  bool watchdog_failed() const { return this->state_ == ComponentState::DATA_TIMEOUT; }
+  bool has_completed_outage() const { return this->has_completed_outage_; }
   bool uart_healthy() const {
     return this->has_received_valid_frame_ && this->state_ == ComponentState::RECEIVING_DATA;
   }
@@ -211,9 +249,15 @@ class SEMMeterHealthTracker {
   }
 
   ComponentState state_{ComponentState::BOOTING};
+  uint32_t setup_timestamp_ms_{0};
   uint32_t last_valid_frame_timestamp_ms_{0};
+  uint32_t current_outage_started_timestamp_ms_{0};
+  uint32_t last_completed_outage_duration_ms_{0};
   uint32_t uart_timeout_ms_{DEFAULT_UART_TIMEOUT_MS};
+  uint32_t startup_grace_period_ms_{DEFAULT_STARTUP_GRACE_PERIOD_MS};
+  bool setup_completed_{false};
   bool has_received_valid_frame_{false};
+  bool has_completed_outage_{false};
 };
 
 struct TimingStatistics {

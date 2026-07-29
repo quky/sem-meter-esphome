@@ -7,12 +7,14 @@ from esphome.const import (
     STATE_CLASS_MEASUREMENT,
     STATE_CLASS_TOTAL_INCREASING,
     UNIT_MILLISECOND,
+    UNIT_SECOND,
 )
 
 CONF_BRANCH_POWER_DIVISOR = "branch_power_divisor"
 CONF_MAIN_POWER_DIVISOR = "main_power_divisor"
 CONF_VOLTAGE_DIVISOR = "voltage_divisor"
 CONF_UART_TIMEOUT = "uart_timeout"
+CONF_STARTUP_GRACE_PERIOD = "startup_grace_period"
 CONF_SEM_METER_HEALTHY = "sem_meter_healthy"
 CONF_UART_HEALTHY = "uart_healthy"
 CONF_COMPONENT_STATE = "component_state"
@@ -26,6 +28,10 @@ CONF_LAST_REJECTED_SENSOR = "last_rejected_sensor"
 CONF_LAST_REJECTION_REASON = "last_rejection_reason"
 CONF_LAST_REJECTED_VALUE = "last_rejected_value"
 CONF_REJECTED_SAMPLES = "rejected_samples"
+CONF_SEM_PARSER_HEALTHY = "sem_parser_healthy"
+CONF_SEM_DIAGNOSTIC_STATUS = "sem_diagnostic_status"
+CONF_SEM_LAST_VALID_FRAME_AGE = "sem_last_valid_frame_age"
+CONF_SEM_LAST_PARSER_OUTAGE_DURATION = "sem_last_parser_outage_duration"
 CONF_PHASE_VOLTAGE_MAXIMUM_DELTA = "phase_voltage_maximum_delta"
 CONF_LINE_FREQUENCY_MAXIMUM_DELTA = "line_frequency_maximum_delta"
 CONF_CIRCUIT_POWER_MAXIMUM_DELTA = "circuit_power_maximum_delta"
@@ -48,6 +54,9 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_MAIN_POWER_DIVISOR, default=102.0): cv.positive_float,
             cv.Optional(CONF_VOLTAGE_DIVISOR, default=10.30): cv.positive_float,
             cv.Optional(CONF_UART_TIMEOUT, default="10s"): cv.positive_time_period_milliseconds,
+            cv.Optional(
+                CONF_STARTUP_GRACE_PERIOD, default="30s"
+            ): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_PHASE_VOLTAGE_MAXIMUM_DELTA, default=40.0): cv.positive_float,
             cv.Optional(CONF_LINE_FREQUENCY_MAXIMUM_DELTA, default=10.0): cv.positive_float,
             cv.Optional(CONF_CIRCUIT_POWER_MAXIMUM_DELTA, default=20000.0): cv.positive_float,
@@ -107,6 +116,24 @@ CONFIG_SCHEMA = (
                 state_class=STATE_CLASS_TOTAL_INCREASING,
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             ),
+            cv.Optional(CONF_SEM_PARSER_HEALTHY): binary_sensor.binary_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_DIAGNOSTIC_STATUS): text_sensor.text_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_LAST_VALID_FRAME_AGE): sensor.sensor_schema(
+                unit_of_measurement=UNIT_SECOND,
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_MEASUREMENT,
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_LAST_PARSER_OUTAGE_DURATION): sensor.sensor_schema(
+                unit_of_measurement=UNIT_SECOND,
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_MEASUREMENT,
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
         }
     )
     .extend(cv.COMPONENT_SCHEMA)
@@ -131,6 +158,11 @@ async def to_code(config):
     cg.add(var.set_main_power_divisor(config[CONF_MAIN_POWER_DIVISOR]))
     cg.add(var.set_voltage_divisor(config[CONF_VOLTAGE_DIVISOR]))
     cg.add(var.set_uart_timeout_ms(config[CONF_UART_TIMEOUT].total_milliseconds))
+    cg.add(
+        var.set_startup_grace_period_ms(
+            config[CONF_STARTUP_GRACE_PERIOD].total_milliseconds
+        )
+    )
     cg.add(
         var.set_phase_voltage_maximum_delta(
             config[CONF_PHASE_VOLTAGE_MAXIMUM_DELTA]
@@ -196,3 +228,17 @@ async def to_code(config):
     if CONF_REJECTED_SAMPLES in config:
         sens = await sensor.new_sensor(config[CONF_REJECTED_SAMPLES])
         cg.add(var.set_rejected_samples_sensor(sens))
+    if CONF_SEM_PARSER_HEALTHY in config:
+        sens = await binary_sensor.new_binary_sensor(config[CONF_SEM_PARSER_HEALTHY])
+        cg.add(var.set_sem_parser_healthy_binary_sensor(sens))
+    if CONF_SEM_DIAGNOSTIC_STATUS in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_SEM_DIAGNOSTIC_STATUS])
+        cg.add(var.set_sem_diagnostic_status_text_sensor(sens))
+    if CONF_SEM_LAST_VALID_FRAME_AGE in config:
+        sens = await sensor.new_sensor(config[CONF_SEM_LAST_VALID_FRAME_AGE])
+        cg.add(var.set_sem_last_valid_frame_age_sensor(sens))
+    if CONF_SEM_LAST_PARSER_OUTAGE_DURATION in config:
+        sens = await sensor.new_sensor(
+            config[CONF_SEM_LAST_PARSER_OUTAGE_DURATION]
+        )
+        cg.add(var.set_sem_last_parser_outage_duration_sensor(sens))
