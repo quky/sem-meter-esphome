@@ -25,6 +25,7 @@ tasks.
 - Safe, always-off-after-reboot parser-timeout simulation for installed-system testing
 - One-shot Wi-Fi timeout and recovery alerts with conservative 180/120-second timing
 - Safe Wi-Fi-timeout simulation that leaves Wi-Fi, API, UART, and measurements running
+- Manual nonblocking SEM self-test with parser, Wi-Fi, API, and consistency checks
 - Fixed-capacity 447-byte UART frame accumulation
 - Support for `0xFF`, captured-fixture `0x3B`, and live-stream `0x3C` record markers
 - Host-side captured-frame, recovery, diagnostics, and AddressSanitizer tests
@@ -60,6 +61,12 @@ whether the network connection is healthy. Home Assistant—not ESPHome—owns
 Telegram delivery. See the [watchdog and notification guide](docs/diagnostics.md)
 for entity semantics, both safe simulations, real and simulated Telegram
 automation examples, hardware test procedures, and troubleshooting.
+
+`Run SEM Self-Test` performs a two-second, read-only diagnostic check while
+UART parsing and sensor updates continue. It reports `PASS` or `FAIL`, a
+concise summary, stable failed-check tokens, and duration. The self-test also
+dispatches distinct start/pass/fail buzzer commands, but cannot electronically
+prove that the passive buzzer was physically audible.
 
 ## Sensor value validation
 

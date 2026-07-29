@@ -44,6 +44,14 @@ different alerts arrive while RTTTL is already playing, the shared RTTTL
 player may replace the current tone sequence; neither event is queued
 unboundedly and this has no effect on UART or parser state.
 
+The self-test logic is another pure state machine in
+`sem_meter_diagnostics.h`. A manual start records `millis()`, duplicate starts
+are ignored, and normal component loops evaluate completion after two seconds.
+The final snapshot checks parser health and frame age, real Wi-Fi plus its
+watchdog and simulation state, ESPHome's official `api_is_connected()` result,
+and conservative internal invariants. Entity publication and RTTTL dispatch
+remain in the ESPHome integration/YAML layers.
+
 ## Behavioral invariants
 
 Do not change these without captured-data evidence and a migration plan:

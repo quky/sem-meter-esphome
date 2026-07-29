@@ -42,10 +42,20 @@ using esphome::sem_meter::SEMMeterEventListener;
 using esphome::sem_meter::SEMMeterHealthUpdate;
 using esphome::sem_meter::SEMMeterHealthTracker;
 using esphome::sem_meter::SEMMeterRecordParser;
+using esphome::sem_meter::SEMMeterSelfTest;
 using esphome::sem_meter::SEMMeterValidator;
 using esphome::sem_meter::SEMMeterWatchdogGate;
 using esphome::sem_meter::SEMMeterWiFiHealthTracker;
 using esphome::sem_meter::STATUS_IDLE;
+using esphome::sem_meter::SELF_TEST_DURATION_MS;
+using esphome::sem_meter::SELF_TEST_FAILURE_API;
+using esphome::sem_meter::SELF_TEST_FAILURE_INTERNAL_STATE;
+using esphome::sem_meter::SELF_TEST_FAILURE_NONE;
+using esphome::sem_meter::SELF_TEST_FAILURE_PARSER;
+using esphome::sem_meter::SELF_TEST_FAILURE_WIFI;
+using esphome::sem_meter::SelfTestInputs;
+using esphome::sem_meter::SelfTestSignal;
+using esphome::sem_meter::SelfTestStatus;
 using esphome::sem_meter::ValidationFailureReason;
 using esphome::sem_meter::WIFI_RECOVERED_STATUS_DURATION_MS;
 using esphome::sem_meter::WiFiDiagnosticState;
@@ -54,6 +64,7 @@ using esphome::sem_meter::component_state_to_string;
 using esphome::sem_meter::measurement_id_to_string;
 using esphome::sem_meter::measurement_unit_to_string;
 using esphome::sem_meter::sem_meter_is_healthy;
+using esphome::sem_meter::self_test_status_to_string;
 using esphome::sem_meter::validation_failure_reason_to_string;
 using esphome::sem_meter::wifi_diagnostic_state_to_string;
 
@@ -767,6 +778,18 @@ void test_yaml_entity_names() {
   expect_true(yaml.find("name: \"Simulate WiFi Timeout\"") != std::string::npos &&
                   yaml.find("id: simulate_wifi_timeout") != std::string::npos,
               "safe WiFi-timeout simulation switch is missing");
+  expect_true(yaml.find("name: \"Run SEM Self-Test\"") != std::string::npos &&
+                  yaml.find("id: run_sem_self_test") != std::string::npos,
+              "manual SEM self-test button is missing");
+  expect_true(yaml.find("name: \"SEM Self-Test Status\"") != std::string::npos &&
+                  yaml.find("name: \"SEM Self-Test Summary\"") != std::string::npos &&
+                  yaml.find("name: \"SEM Self-Test Failed Checks\"") != std::string::npos &&
+                  yaml.find("name: \"SEM Last Self-Test Duration\"") != std::string::npos,
+              "SEM self-test result entities are missing");
+  expect_true(yaml.find("id: buzzer_self_test_start") != std::string::npos &&
+                  yaml.find("id: buzzer_self_test_pass") != std::string::npos &&
+                  yaml.find("id: buzzer_self_test_fail") != std::string::npos,
+              "centralized self-test buzzer scripts are missing");
   std::cout << "[PASS] intentional YAML names preserve Surge Protector and A/C entity identity\n";
 }
 
@@ -1412,6 +1435,151 @@ void test_wifi_timeout_simulation_and_rollover() {
   std::cout << "[PASS] WiFi simulation and outage timing remain isolated and wrap-safe\n";
 }
 
+SelfTestInputs healthy_self_test_inputs() {
+  SelfTestInputs inputs;
+  inputs.parser_watchdog_healthy = true;
+  inputs.has_valid_frame = true;
+  inputs.valid_frame_age_ms = 100;
+  inputs.parser_timeout_ms = DEFAULT_UART_TIMEOUT_MS;
+  inputs.wifi_real_connected = true;
+  inputs.wifi_watchdog_healthy = true;
+  inputs.wifi_timeout_simulation_active = false;
+  inputs.api_connected = true;
+  inputs.internal_state_consistent = true;
+  return inputs;
+}
+
+void test_self_test_initial_pass_and_duplicate_start() {
+  SEMMeterSelfTest self_test;
+  expect_true(self_test.status() == SelfTestStatus::NOT_RUN &&
+                  self_test.failed_checks() == SELF_TEST_FAILURE_NONE &&
+                  std::string(self_test.failed_checks_string()) == "NONE",
+              "self-test did not initialize to NOT_RUN/NONE");
+
+  const auto started = self_test.start(100);
+  expect_true(started.changed && started.signal == SelfTestSignal::STARTED &&
+                  self_test.status() == SelfTestStatus::RUNNING &&
+                  std::string(self_test.summary()) == "Self-test in progress",
+              "self-test did not enter RUNNING");
+  const auto duplicate = self_test.start(200);
+  expect_true(!duplicate.changed && duplicate.signal == SelfTestSignal::NONE &&
+                  self_test.status() == SelfTestStatus::RUNNING,
+              "duplicate self-test start was not ignored safely");
+  expect_true(!self_test.evaluate(100 + SELF_TEST_DURATION_MS - 1,
+                                 healthy_self_test_inputs()).changed,
+              "self-test completed before its bounded duration");
+
+  const auto passed = self_test.evaluate(
+      100 + SELF_TEST_DURATION_MS, healthy_self_test_inputs());
+  expect_true(passed.changed && passed.signal == SelfTestSignal::PASSED &&
+                  passed.status == SelfTestStatus::PASS &&
+                  self_test.last_duration_ms() == SELF_TEST_DURATION_MS &&
+                  std::string(self_test.summary()) == "All checks passed" &&
+                  std::string(self_test.failed_checks_string()) == "NONE",
+              "healthy self-test did not publish one complete PASS result");
+  expect_true(!self_test.evaluate(100 + (2 * SELF_TEST_DURATION_MS),
+                                 healthy_self_test_inputs()).changed,
+              "completed self-test emitted a duplicate pass signal");
+  std::cout << "[PASS] self-test initial state, duplicate protection, duration, and pass signal are correct\n";
+}
+
+void test_self_test_failure_tokens_and_ordering() {
+  SelfTestInputs inputs = healthy_self_test_inputs();
+
+  SEMMeterSelfTest parser;
+  parser.start(0);
+  inputs.parser_watchdog_healthy = false;
+  const auto parser_failed = parser.evaluate(SELF_TEST_DURATION_MS, inputs);
+  expect_true(parser_failed.signal == SelfTestSignal::FAILED &&
+                  parser.failed_checks() == SELF_TEST_FAILURE_PARSER &&
+                  std::string(parser.failed_checks_string()) == "PARSER" &&
+                  std::string(parser.summary()) == "Parser unhealthy",
+              "parser failure did not produce PARSER and one fail signal");
+
+  inputs = healthy_self_test_inputs();
+  SEMMeterSelfTest stale_parser;
+  stale_parser.start(0);
+  inputs.valid_frame_age_ms = inputs.parser_timeout_ms;
+  stale_parser.evaluate(SELF_TEST_DURATION_MS, inputs);
+  expect_true(stale_parser.failed_checks() == SELF_TEST_FAILURE_PARSER,
+              "stale valid-frame age did not fail the parser check");
+
+  inputs = healthy_self_test_inputs();
+  SEMMeterSelfTest wifi;
+  wifi.start(0);
+  inputs.wifi_real_connected = false;
+  const auto wifi_failed = wifi.evaluate(SELF_TEST_DURATION_MS, inputs);
+  expect_true(wifi_failed.signal == SelfTestSignal::FAILED &&
+                  wifi.failed_checks() == SELF_TEST_FAILURE_WIFI &&
+                  std::string(wifi.failed_checks_string()) == "WIFI",
+              "WiFi failure did not produce WIFI");
+
+  inputs = healthy_self_test_inputs();
+  SEMMeterSelfTest wifi_simulation;
+  wifi_simulation.start(0);
+  inputs.wifi_timeout_simulation_active = true;
+  wifi_simulation.evaluate(SELF_TEST_DURATION_MS, inputs);
+  expect_true(wifi_simulation.failed_checks() == SELF_TEST_FAILURE_WIFI,
+              "active WiFi simulation did not fail the WiFi check");
+
+  inputs = healthy_self_test_inputs();
+  SEMMeterSelfTest parser_wifi;
+  parser_wifi.start(0);
+  inputs.parser_watchdog_healthy = false;
+  inputs.wifi_watchdog_healthy = false;
+  parser_wifi.evaluate(SELF_TEST_DURATION_MS, inputs);
+  expect_true(parser_wifi.failed_checks() ==
+                  (SELF_TEST_FAILURE_PARSER | SELF_TEST_FAILURE_WIFI) &&
+                  std::string(parser_wifi.failed_checks_string()) ==
+                      "PARSER,WIFI" &&
+                  std::string(parser_wifi.summary()) ==
+                      "Multiple checks failed",
+              "combined failures did not retain stable PARSER,WIFI ordering");
+  std::cout << "[PASS] self-test parser, WiFi, and combined failure tokens are stable\n";
+}
+
+void test_self_test_api_internal_and_rollover() {
+  SelfTestInputs inputs = healthy_self_test_inputs();
+  SEMMeterSelfTest api;
+  api.start(0);
+  inputs.api_connected = false;
+  api.evaluate(SELF_TEST_DURATION_MS, inputs);
+  expect_true(api.failed_checks() == SELF_TEST_FAILURE_API &&
+                  std::string(api.failed_checks_string()) == "API" &&
+                  std::string(api.summary()) == "API disconnected",
+              "official API connectivity failure was not reported");
+
+  inputs = healthy_self_test_inputs();
+  SEMMeterSelfTest internal;
+  internal.start(0);
+  inputs.internal_state_consistent = false;
+  internal.evaluate(SELF_TEST_DURATION_MS, inputs);
+  expect_true(internal.failed_checks() == SELF_TEST_FAILURE_INTERNAL_STATE &&
+                  std::string(internal.failed_checks_string()) ==
+                      "INTERNAL_STATE",
+              "internal contradiction was not reported");
+
+  inputs = healthy_self_test_inputs();
+  SEMMeterSelfTest rollover;
+  const uint32_t started_at = 0xFFFFFF00U;
+  rollover.start(started_at);
+  const auto completed =
+      rollover.evaluate(started_at + SELF_TEST_DURATION_MS, inputs);
+  expect_true(completed.status == SelfTestStatus::PASS &&
+                  completed.duration_ms == SELF_TEST_DURATION_MS,
+              "self-test duration failed across millis rollover");
+  expect_true(std::string(self_test_status_to_string(SelfTestStatus::NOT_RUN)) ==
+                  "NOT_RUN" &&
+                  std::string(self_test_status_to_string(SelfTestStatus::RUNNING)) ==
+                  "RUNNING" &&
+                  std::string(self_test_status_to_string(SelfTestStatus::PASS)) ==
+                  "PASS" &&
+                  std::string(self_test_status_to_string(SelfTestStatus::FAIL)) ==
+                  "FAIL",
+              "self-test status strings are unstable");
+  std::cout << "[PASS] self-test API, internal-state, rollover, and status behavior are correct\n";
+}
+
 void test_wrap_safe_uart_timeout() {
   SEMMeterHealthTracker health;
   health.setup_completed(0xFFFFFE00U);
@@ -1533,6 +1701,9 @@ int main(int argc, char **argv) {
     test_wifi_startup_and_brief_disconnect();
     test_wifi_sustained_outage_and_recovery();
     test_wifi_timeout_simulation_and_rollover();
+    test_self_test_initial_pass_and_duplicate_start();
+    test_self_test_failure_tokens_and_ordering();
+    test_self_test_api_internal_and_rollover();
     test_wrap_safe_uart_timeout();
     test_non_recursive_event_dispatch();
     test_retained_overlap(frame);

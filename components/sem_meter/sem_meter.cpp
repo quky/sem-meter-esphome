@@ -7,6 +7,7 @@
 
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
+#include "esphome/core/util.h"
 
 namespace esphome::sem_meter {
 
@@ -21,6 +22,7 @@ void SEMMeterComponent::setup() {
   this->apply_health_update_(this->health_.setup_completed(now));
   this->wifi_health_.setup_completed(now);
   this->publish_wifi_immediate_diagnostics_(ComponentEvent::NONE);
+  this->publish_self_test_diagnostics_(false);
   this->publish_rejection_diagnostics_();
 }
 
@@ -38,6 +40,7 @@ void SEMMeterComponent::loop() {
       const uint32_t now = millis();
       this->evaluate_watchdog_(now);
       this->evaluate_wifi_watchdog_(now);
+      this->evaluate_self_test_(now);
       this->publish_periodic_diagnostics_(now);
       this->record_loop_time_(loop_started_at);
       return;
@@ -81,6 +84,7 @@ void SEMMeterComponent::loop() {
   }
   this->evaluate_watchdog_(now);
   this->evaluate_wifi_watchdog_(now);
+  this->evaluate_self_test_(now);
   this->publish_periodic_diagnostics_(now);
 
   this->record_loop_time_(loop_started_at);
@@ -353,6 +357,15 @@ void SEMMeterComponent::set_wifi_timeout_simulation(bool enabled) {
       this->wifi_health_.set_timeout_simulation_enabled(enabled, millis()));
 }
 
+void SEMMeterComponent::run_self_test() {
+  const SelfTestUpdate update = this->self_test_.start(millis());
+  if (!update.changed) {
+    return;
+  }
+  ESP_LOGI(TAG, "SEM self-test started");
+  this->apply_self_test_update_(update);
+}
+
 void SEMMeterComponent::on_partial_record(size_t offset) {
   ESP_LOGV(TAG, "Preserving partial record candidate at frame offset %zu", offset);
 }
@@ -423,6 +436,98 @@ void SEMMeterComponent::publish_wifi_immediate_diagnostics_(
     this->sem_wifi_healthy_binary_sensor_->publish_state(
         this->wifi_health_.healthy());
   }
+}
+
+void SEMMeterComponent::evaluate_self_test_(uint32_t timestamp_ms) {
+  if (!this->self_test_.running()) {
+    return;
+  }
+  this->apply_self_test_update_(
+      this->self_test_.evaluate(timestamp_ms,
+                                this->collect_self_test_inputs_(timestamp_ms)));
+}
+
+void SEMMeterComponent::apply_self_test_update_(const SelfTestUpdate &update) {
+  if (!update.changed) {
+    return;
+  }
+  this->publish_self_test_diagnostics_(
+      update.signal == SelfTestSignal::PASSED ||
+      update.signal == SelfTestSignal::FAILED);
+  if (update.signal == SelfTestSignal::PASSED ||
+      update.signal == SelfTestSignal::FAILED) {
+    ESP_LOGI(TAG, "SEM self-test completed: %s (%s, %.1f s)",
+             self_test_status_to_string(update.status),
+             this->self_test_.failed_checks_string(),
+             static_cast<double>(update.duration_ms) / 1000.0);
+  }
+}
+
+void SEMMeterComponent::publish_self_test_diagnostics_(bool publish_duration) {
+  if (this->sem_self_test_summary_text_sensor_ != nullptr) {
+    this->sem_self_test_summary_text_sensor_->publish_state(
+        this->self_test_.summary());
+  }
+  if (this->sem_self_test_failed_checks_text_sensor_ != nullptr) {
+    this->sem_self_test_failed_checks_text_sensor_->publish_state(
+        this->self_test_.failed_checks_string());
+  }
+  if (publish_duration &&
+      this->sem_last_self_test_duration_sensor_ != nullptr) {
+    this->sem_last_self_test_duration_sensor_->publish_state(
+        static_cast<float>(this->self_test_.last_duration_ms()) / 1000.0f);
+  }
+  // Publish status last so Home Assistant automations observe the associated
+  // summary, failed checks, and duration before reacting to PASS or FAIL.
+  if (this->sem_self_test_status_text_sensor_ != nullptr) {
+    this->sem_self_test_status_text_sensor_->publish_state(
+        self_test_status_to_string(this->self_test_.status()));
+  }
+}
+
+SelfTestInputs SEMMeterComponent::collect_self_test_inputs_(
+    uint32_t timestamp_ms) const {
+  return {
+      this->health_.sem_meter_healthy(),
+      this->health_.has_received_valid_frame(),
+      this->health_.milliseconds_since_last_valid_frame(timestamp_ms),
+      this->health_.uart_timeout_ms(),
+      this->wifi_health_.real_connected(),
+      this->wifi_health_.healthy(),
+      this->wifi_health_.timeout_simulation_enabled(),
+      api_is_connected(),
+      this->internal_diagnostic_state_consistent_(),
+  };
+}
+
+bool SEMMeterComponent::internal_diagnostic_state_consistent_() const {
+  if (this->health_.sem_meter_healthy() &&
+      !this->health_.has_received_valid_frame()) {
+    return false;
+  }
+  if (this->health_.watchdog_failed() &&
+      this->health_.sem_meter_healthy()) {
+    return false;
+  }
+  if (this->wifi_health_.outage_declared() &&
+      this->wifi_health_.healthy()) {
+    return false;
+  }
+  if ((this->wifi_health_.state() == WiFiDiagnosticState::WIFI_TIMEOUT) !=
+      this->wifi_health_.outage_declared()) {
+    return false;
+  }
+  if (this->wifi_health_.timeout_simulation_enabled() &&
+      (this->wifi_health_.state() == WiFiDiagnosticState::CONNECTED ||
+       this->wifi_health_.state() == WiFiDiagnosticState::RECOVERED)) {
+    return false;
+  }
+  if (!this->wifi_health_.real_connected() &&
+      (this->wifi_health_.state() == WiFiDiagnosticState::CONNECTED ||
+       this->wifi_health_.state() == WiFiDiagnosticState::RECOVERED)) {
+    return false;
+  }
+  return true;
 }
 
 bool SEMMeterComponent::all_measurements_ready_(MeasurementId first, MeasurementId last) const {

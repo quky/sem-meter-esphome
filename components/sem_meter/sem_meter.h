@@ -104,6 +104,18 @@ class SEMMeterComponent final : public Component,
   void set_sem_wifi_disconnect_age_sensor(sensor::Sensor *sensor) {
     this->sem_wifi_disconnect_age_sensor_ = sensor;
   }
+  void set_sem_self_test_status_text_sensor(text_sensor::TextSensor *sensor) {
+    this->sem_self_test_status_text_sensor_ = sensor;
+  }
+  void set_sem_self_test_summary_text_sensor(text_sensor::TextSensor *sensor) {
+    this->sem_self_test_summary_text_sensor_ = sensor;
+  }
+  void set_sem_self_test_failed_checks_text_sensor(text_sensor::TextSensor *sensor) {
+    this->sem_self_test_failed_checks_text_sensor_ = sensor;
+  }
+  void set_sem_last_self_test_duration_sensor(sensor::Sensor *sensor) {
+    this->sem_last_self_test_duration_sensor_ = sensor;
+  }
 
   float get_branch_power(size_t index) const { return this->accumulator_.parser().get_branch_power(index); }
   float get_phase_a_power() const { return this->accumulator_.parser().get_phase_a_power(); }
@@ -162,6 +174,14 @@ class SEMMeterComponent final : public Component,
   void set_wifi_outage_threshold_ms(uint32_t threshold_ms) {
     this->wifi_health_.set_outage_threshold_ms(threshold_ms);
   }
+  void run_self_test();
+  SelfTestStatus get_self_test_status() const { return this->self_test_.status(); }
+  uint8_t get_self_test_failed_checks() const {
+    return this->self_test_.failed_checks();
+  }
+  uint32_t get_last_self_test_duration_ms() const {
+    return this->self_test_.last_duration_ms();
+  }
   uint64_t get_rejected_sensor_values() const {
     return this->validator_.rejected_sensor_values();
   }
@@ -216,6 +236,11 @@ class SEMMeterComponent final : public Component,
   void evaluate_wifi_watchdog_(uint32_t timestamp_ms);
   void apply_wifi_health_update_(const WiFiHealthUpdate &update);
   void publish_wifi_immediate_diagnostics_(ComponentEvent transition_event);
+  void evaluate_self_test_(uint32_t timestamp_ms);
+  void apply_self_test_update_(const SelfTestUpdate &update);
+  void publish_self_test_diagnostics_(bool publish_duration);
+  SelfTestInputs collect_self_test_inputs_(uint32_t timestamp_ms) const;
+  bool internal_diagnostic_state_consistent_() const;
   const char *diagnostic_status_(ComponentEvent transition_event) const;
   void update_measurement_readiness_(uint8_t record_id);
   bool all_measurements_ready_(MeasurementId first, MeasurementId last) const;
@@ -230,6 +255,7 @@ class SEMMeterComponent final : public Component,
   SEMMeterHealthTracker health_{};
   SEMMeterWatchdogGate watchdog_gate_{};
   SEMMeterWiFiHealthTracker wifi_health_{};
+  SEMMeterSelfTest self_test_{};
   SEMMeterEventDispatcher event_dispatcher_{};
   SEMMeterValidator validator_{};
   SEMMeterValidator cycle_validator_{};
@@ -254,6 +280,10 @@ class SEMMeterComponent final : public Component,
   text_sensor::TextSensor *sem_wifi_diagnostic_status_text_sensor_{nullptr};
   sensor::Sensor *sem_last_wifi_outage_duration_sensor_{nullptr};
   sensor::Sensor *sem_wifi_disconnect_age_sensor_{nullptr};
+  text_sensor::TextSensor *sem_self_test_status_text_sensor_{nullptr};
+  text_sensor::TextSensor *sem_self_test_summary_text_sensor_{nullptr};
+  text_sensor::TextSensor *sem_self_test_failed_checks_text_sensor_{nullptr};
+  sensor::Sensor *sem_last_self_test_duration_sensor_{nullptr};
   uint32_t last_diagnostic_publish_ms_{0};
   uint32_t last_watchdog_evaluation_ms_{0};
   uint32_t last_wifi_watchdog_evaluation_ms_{0};

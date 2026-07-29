@@ -1,4 +1,4 @@
-# Parser and Wi-Fi Watchdogs
+# Reliability Diagnostics and Notifications
 
 ## Architecture
 
@@ -47,6 +47,9 @@ Available patterns are:
 | Parser recovered | Communication recovery | One short positive chirp, once |
 | Wi-Fi lost | Sustained network failure | Two longer descending tones, once |
 | Wi-Fi recovered | Network recovery | Two short ascending chirps, once |
+| Self-test start | Manual test accepted | One very short neutral chirp |
+| Self-test pass | Every available check passed | Three short ascending tones |
+| Self-test fail | One or more checks failed | One long low tone, then two short low tones |
 
 The manual `Buzzer Two Beeps` button is disabled by default and categorized as
 a diagnostic entity. Enable it from the device's entity settings in Home
@@ -104,6 +107,11 @@ Meter** before using the examples below.
 | SEM Last WiFi Outage Duration | `sensor.sem_meter_sem_last_wifi_outage_duration` | Sensor | s | Duration of the most recently recovered declared Wi-Fi outage | Last completed duration |
 | SEM WiFi Disconnect Age | `sensor.sem_meter_sem_wifi_disconnect_age` | Sensor | s | Current real or simulated disconnect age; zero while effectively connected | `0` |
 | Simulate WiFi Timeout | `switch.sem_meter_simulate_wifi_timeout` | Switch | — | Diagnostic-only Wi-Fi state-machine input override | `off` |
+| Run SEM Self-Test | `button.sem_meter_run_sem_self_test` | Button | — | Starts one safe, nonblocking diagnostic run | — |
+| SEM Self-Test Status | `text_sensor.sem_meter_sem_self_test_status` | Text sensor | — | `NOT_RUN`, `RUNNING`, `PASS`, or `FAIL` | `NOT_RUN` until manually run |
+| SEM Self-Test Summary | `text_sensor.sem_meter_sem_self_test_summary` | Text sensor | — | Concise dashboard/notification result | `Self-test has not run` |
+| SEM Self-Test Failed Checks | `text_sensor.sem_meter_sem_self_test_failed_checks` | Text sensor | — | Stable comma-separated failure tokens | `NONE` |
+| SEM Last Self-Test Duration | `sensor.sem_meter_sem_last_self_test_duration` | Sensor | s | Most recent completed test duration | Unavailable until completion |
 | Last Event | `text_sensor.sem_meter_last_event` | Text sensor | — | Latest internal reliability event | Usually `UART_STARTED` or another recent event |
 | WiFi Signal | `sensor.sem_meter_wifi_signal` | Sensor | dBm | Device Wi-Fi signal, independent of SEM UART health | Site dependent |
 
@@ -214,6 +222,52 @@ To run the hardware test:
 
 The simulation is diagnostic-only. Turn it off after testing; a reboot also
 guarantees that it is cleared.
+
+## Manual SEM self-test
+
+Press `Run SEM Self-Test` from the SEM Meter device page. The test is manual
+only: it does not run at boot or on a schedule. A second press while status is
+`RUNNING` is ignored safely.
+
+Execution takes about two seconds and does not block normal component loops.
+UART reception, parser validation, power publication, energy integration,
+Wi-Fi, API, and both watchdogs continue normally. The test never enables a
+simulation, reboots, resets, updates, or disconnects anything.
+
+The result checks:
+
+- **Parser:** the parser watchdog is healthy, at least one valid frame has been
+  accepted, and its age is below the configured parser timeout.
+- **Wi-Fi:** the real Wi-Fi connection is active, its watchdog is healthy, and
+  Wi-Fi-timeout simulation is off.
+- **API:** ESPHome's official `api_is_connected()` reports at least one native
+  API client.
+- **Internal state:** conservative parser/Wi-Fi invariants are consistent.
+- **Buzzer command path:** the local status transition dispatches a short
+  start tone and one pass/fail pattern through RTTTL.
+
+The buzzer portion verifies only firmware command dispatch. The device has no
+microphone or electrical feedback capable of proving that a physical sound was
+heard, so audible output must be confirmed by a person.
+
+Expected healthy run:
+
+1. Status becomes `RUNNING`; summary becomes `Self-test in progress`; failed
+   checks becomes `NONE`; one neutral chirp is requested.
+2. After about two seconds, status becomes `PASS`, summary becomes `All checks
+   passed`, duration updates, and three ascending tones are requested.
+
+On failure, status becomes `FAIL`, one failure pattern is requested, and failed
+checks contains stable tokens in this order:
+
+```text
+PARSER,WIFI,API,INTERNAL_STATE
+```
+
+Only failing tokens are included. `SEM Last Self-Test Duration` retains the
+latest completed duration. No device-time entity is added: Home Assistant
+already records the result entity's state-change timestamp and supplies
+timestamps for notifications.
 
 ## Telegram automation examples
 
@@ -399,6 +453,84 @@ message cannot be delivered until connectivity returns. The local GPIO41
 buzzer still provides the on-site warning, and the recovery message can include
 the firmware-recorded duration.
 
+### Optional self-test result notification
+
+This automation sends a message only after a user manually runs the self-test.
+Use the actual generated entity IDs from your installation.
+
+```yaml
+alias: "Garage SEM Meter - Self-Test Result"
+description: "Send the final result of a manually requested SEM self-test."
+mode: single
+triggers:
+  - trigger: state
+    entity_id: text_sensor.sem_meter_sem_self_test_status
+    from: "RUNNING"
+    to: "PASS"
+  - trigger: state
+    entity_id: text_sensor.sem_meter_sem_self_test_status
+    from: "RUNNING"
+    to: "FAIL"
+actions:
+  - action: telegram_bot.send_message
+    data:
+      config_entry_id: <telegram_config_entry_id>
+      target: <chat_id>
+      title: "🧪 SEM Meter Self-Test Result"
+      message: >-
+        Result:
+        {{ states('text_sensor.sem_meter_sem_self_test_status') }}
+
+        Summary:
+        {{ states('text_sensor.sem_meter_sem_self_test_summary') }}
+
+        Failed checks:
+        {{ states('text_sensor.sem_meter_sem_self_test_failed_checks')
+           | replace('_', ' ') }}
+
+        Duration:
+        {{ states('sensor.sem_meter_sem_last_self_test_duration')
+           | float(0) | round(1) }} seconds
+
+        Parser:
+        {{ 'Healthy'
+           if is_state('binary_sensor.sem_meter_sem_parser_healthy', 'on')
+           else 'Unhealthy' }}
+
+        WiFi:
+        {{ 'Healthy'
+           if is_state('binary_sensor.sem_meter_sem_wifi_healthy', 'on')
+           else 'Unhealthy' }}
+
+        Online:
+        {{ states('binary_sensor.sem_meter_sem_meter_online') }}
+
+        Time: {{ now().strftime('%m/%d/%Y %I:%M:%S %p') }}
+```
+
+The firmware never contacts Telegram. Home Assistant supplies the timestamp
+and delivery. Replacing underscores avoids accidental Telegram Markdown
+formatting. The test cannot independently verify home internet availability or
+Telegram delivery.
+
+## Home Assistant dashboard example
+
+Replace entity IDs with those generated by your installation:
+
+```yaml
+type: entities
+title: SEM Meter Diagnostics
+entities:
+  - button.sem_meter_run_sem_self_test
+  - text_sensor.sem_meter_sem_self_test_status
+  - text_sensor.sem_meter_sem_self_test_summary
+  - text_sensor.sem_meter_sem_self_test_failed_checks
+  - sensor.sem_meter_sem_last_self_test_duration
+  - binary_sensor.sem_meter_sem_parser_healthy
+  - binary_sensor.sem_meter_sem_wifi_healthy
+  - binary_sensor.sem_meter_sem_meter_online
+```
+
 ## Troubleshooting
 
 - Enable the disabled `Buzzer Two Beeps` entity from Home Assistant's SEM Meter
@@ -420,17 +552,29 @@ the firmware-recorded duration.
 - If two different alert patterns begin very close together, ESPHome's single
   RTTTL player may preempt the earlier sound. The watchdog events remain
   one-shot and parser/network state is unaffected.
+- `NOT_RUN` is normal until the button is pressed.
+- `RUNNING` should last about two seconds. If it remains stuck, inspect logs
+  for component-loop or device stability problems.
+- `PARSER` means no sufficiently recent accepted frame or an unhealthy parser
+  watchdog.
+- `WIFI` means real Wi-Fi is disconnected, the Wi-Fi watchdog is unhealthy,
+  or Wi-Fi-timeout simulation is active.
+- `API` means no native ESPHome API client was connected at evaluation time.
+  Invoking the button from the local web server can therefore legitimately
+  report `API`; a Home Assistant button press should normally pass it.
+- `INTERNAL_STATE` indicates a conservative runtime-invariant contradiction.
+  Capture logs before rebooting so the state can be investigated.
 
 ## Future diagnostic roadmap
 
-Wi-Fi lost/restored events, local sounds, diagnostics, and safe simulation are
-implemented. The following items are not implemented:
+Parser/Wi-Fi watchdogs, safe simulations, local sounds, and the manual self-test
+are implemented. The following items are not implemented:
 
 - Home Assistant API lost/restored events
 - Abnormal voltage and frequency alerts
 - Missing CT data detection
 - Reboot/reset reason reporting
-- Self-test mode
 - Buzzer modes: Off, Critical Only, Normal, and Verbose
 - Quiet hours
 - Telegram escalation
+- Persistent diagnostic counters across reboot

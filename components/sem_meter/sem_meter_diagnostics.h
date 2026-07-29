@@ -77,6 +77,7 @@ inline constexpr uint32_t DEFAULT_STARTUP_GRACE_PERIOD_MS = 30000;
 inline constexpr uint32_t DEFAULT_WIFI_STARTUP_GRACE_PERIOD_MS = 180000;
 inline constexpr uint32_t DEFAULT_WIFI_OUTAGE_THRESHOLD_MS = 120000;
 inline constexpr uint32_t WIFI_RECOVERED_STATUS_DURATION_MS = 5000;
+inline constexpr uint32_t SELF_TEST_DURATION_MS = 2000;
 inline constexpr size_t MAX_EVENT_LISTENERS = 1;
 
 class SEMMeterEventListener {
@@ -509,6 +510,193 @@ class SEMMeterWiFiHealthTracker {
   bool outage_declared_{false};
   bool timeout_simulation_enabled_{false};
   bool has_completed_outage_{false};
+};
+
+enum class SelfTestStatus {
+  NOT_RUN,
+  RUNNING,
+  PASS,
+  FAIL,
+};
+
+inline const char *self_test_status_to_string(SelfTestStatus status) {
+  switch (status) {
+    case SelfTestStatus::NOT_RUN:
+      return "NOT_RUN";
+    case SelfTestStatus::RUNNING:
+      return "RUNNING";
+    case SelfTestStatus::PASS:
+      return "PASS";
+    case SelfTestStatus::FAIL:
+      return "FAIL";
+  }
+  return "UNKNOWN";
+}
+
+enum class SelfTestSignal {
+  NONE,
+  STARTED,
+  PASSED,
+  FAILED,
+};
+
+enum SelfTestFailure : uint8_t {
+  SELF_TEST_FAILURE_NONE = 0,
+  SELF_TEST_FAILURE_PARSER = 1U << 0,
+  SELF_TEST_FAILURE_WIFI = 1U << 1,
+  SELF_TEST_FAILURE_API = 1U << 2,
+  SELF_TEST_FAILURE_INTERNAL_STATE = 1U << 3,
+};
+
+struct SelfTestInputs {
+  bool parser_watchdog_healthy{false};
+  bool has_valid_frame{false};
+  uint32_t valid_frame_age_ms{0};
+  uint32_t parser_timeout_ms{DEFAULT_UART_TIMEOUT_MS};
+  bool wifi_real_connected{false};
+  bool wifi_watchdog_healthy{false};
+  bool wifi_timeout_simulation_active{false};
+  bool api_connected{false};
+  bool internal_state_consistent{true};
+};
+
+struct SelfTestUpdate {
+  SelfTestSignal signal{SelfTestSignal::NONE};
+  SelfTestStatus status{SelfTestStatus::NOT_RUN};
+  uint8_t failed_checks{SELF_TEST_FAILURE_NONE};
+  uint32_t duration_ms{0};
+  bool changed{false};
+};
+
+class SEMMeterSelfTest {
+ public:
+  SelfTestUpdate start(uint32_t timestamp_ms) {
+    if (this->status_ == SelfTestStatus::RUNNING) {
+      return this->no_change_();
+    }
+    this->status_ = SelfTestStatus::RUNNING;
+    this->failed_checks_ = SELF_TEST_FAILURE_NONE;
+    this->started_timestamp_ms_ = timestamp_ms;
+    return {SelfTestSignal::STARTED, this->status_, this->failed_checks_, 0, true};
+  }
+
+  SelfTestUpdate evaluate(uint32_t timestamp_ms, const SelfTestInputs &inputs) {
+    if (this->status_ != SelfTestStatus::RUNNING ||
+        timestamp_ms - this->started_timestamp_ms_ < SELF_TEST_DURATION_MS) {
+      return this->no_change_();
+    }
+
+    uint8_t failures = SELF_TEST_FAILURE_NONE;
+    if (!inputs.parser_watchdog_healthy || !inputs.has_valid_frame ||
+        inputs.valid_frame_age_ms >= inputs.parser_timeout_ms) {
+      failures |= SELF_TEST_FAILURE_PARSER;
+    }
+    if (!inputs.wifi_real_connected || !inputs.wifi_watchdog_healthy ||
+        inputs.wifi_timeout_simulation_active) {
+      failures |= SELF_TEST_FAILURE_WIFI;
+    }
+    if (!inputs.api_connected) {
+      failures |= SELF_TEST_FAILURE_API;
+    }
+    if (!inputs.internal_state_consistent) {
+      failures |= SELF_TEST_FAILURE_INTERNAL_STATE;
+    }
+
+    this->failed_checks_ = failures;
+    this->last_duration_ms_ = timestamp_ms - this->started_timestamp_ms_;
+    this->status_ =
+        failures == SELF_TEST_FAILURE_NONE ? SelfTestStatus::PASS
+                                           : SelfTestStatus::FAIL;
+    return {failures == SELF_TEST_FAILURE_NONE ? SelfTestSignal::PASSED
+                                               : SelfTestSignal::FAILED,
+            this->status_, this->failed_checks_, this->last_duration_ms_, true};
+  }
+
+  SelfTestStatus status() const { return this->status_; }
+  uint8_t failed_checks() const { return this->failed_checks_; }
+  uint32_t last_duration_ms() const { return this->last_duration_ms_; }
+  bool running() const { return this->status_ == SelfTestStatus::RUNNING; }
+
+  const char *failed_checks_string() const {
+    switch (this->failed_checks_) {
+      case SELF_TEST_FAILURE_NONE:
+        return "NONE";
+      case SELF_TEST_FAILURE_PARSER:
+        return "PARSER";
+      case SELF_TEST_FAILURE_WIFI:
+        return "WIFI";
+      case SELF_TEST_FAILURE_API:
+        return "API";
+      case SELF_TEST_FAILURE_INTERNAL_STATE:
+        return "INTERNAL_STATE";
+      case SELF_TEST_FAILURE_PARSER | SELF_TEST_FAILURE_WIFI:
+        return "PARSER,WIFI";
+      case SELF_TEST_FAILURE_PARSER | SELF_TEST_FAILURE_API:
+        return "PARSER,API";
+      case SELF_TEST_FAILURE_PARSER | SELF_TEST_FAILURE_INTERNAL_STATE:
+        return "PARSER,INTERNAL_STATE";
+      case SELF_TEST_FAILURE_WIFI | SELF_TEST_FAILURE_API:
+        return "WIFI,API";
+      case SELF_TEST_FAILURE_WIFI | SELF_TEST_FAILURE_INTERNAL_STATE:
+        return "WIFI,INTERNAL_STATE";
+      case SELF_TEST_FAILURE_API | SELF_TEST_FAILURE_INTERNAL_STATE:
+        return "API,INTERNAL_STATE";
+      case SELF_TEST_FAILURE_PARSER | SELF_TEST_FAILURE_WIFI |
+          SELF_TEST_FAILURE_API:
+        return "PARSER,WIFI,API";
+      case SELF_TEST_FAILURE_PARSER | SELF_TEST_FAILURE_WIFI |
+          SELF_TEST_FAILURE_INTERNAL_STATE:
+        return "PARSER,WIFI,INTERNAL_STATE";
+      case SELF_TEST_FAILURE_PARSER | SELF_TEST_FAILURE_API |
+          SELF_TEST_FAILURE_INTERNAL_STATE:
+        return "PARSER,API,INTERNAL_STATE";
+      case SELF_TEST_FAILURE_WIFI | SELF_TEST_FAILURE_API |
+          SELF_TEST_FAILURE_INTERNAL_STATE:
+        return "WIFI,API,INTERNAL_STATE";
+      case SELF_TEST_FAILURE_PARSER | SELF_TEST_FAILURE_WIFI |
+          SELF_TEST_FAILURE_API | SELF_TEST_FAILURE_INTERNAL_STATE:
+        return "PARSER,WIFI,API,INTERNAL_STATE";
+      default:
+        return "INTERNAL_STATE";
+    }
+  }
+
+  const char *summary() const {
+    if (this->status_ == SelfTestStatus::NOT_RUN) {
+      return "Self-test has not run";
+    }
+    if (this->status_ == SelfTestStatus::RUNNING) {
+      return "Self-test in progress";
+    }
+    if (this->status_ == SelfTestStatus::PASS) {
+      return "All checks passed";
+    }
+    if ((this->failed_checks_ &
+         static_cast<uint8_t>(this->failed_checks_ - 1U)) != 0) {
+      return "Multiple checks failed";
+    }
+    if ((this->failed_checks_ & SELF_TEST_FAILURE_PARSER) != 0) {
+      return "Parser unhealthy";
+    }
+    if ((this->failed_checks_ & SELF_TEST_FAILURE_WIFI) != 0) {
+      return "WiFi unhealthy";
+    }
+    if ((this->failed_checks_ & SELF_TEST_FAILURE_API) != 0) {
+      return "API disconnected";
+    }
+    return "Internal state inconsistent";
+  }
+
+ private:
+  SelfTestUpdate no_change_() const {
+    return {SelfTestSignal::NONE, this->status_, this->failed_checks_,
+            this->last_duration_ms_, false};
+  }
+
+  SelfTestStatus status_{SelfTestStatus::NOT_RUN};
+  uint8_t failed_checks_{SELF_TEST_FAILURE_NONE};
+  uint32_t started_timestamp_ms_{0};
+  uint32_t last_duration_ms_{0};
 };
 
 struct TimingStatistics {

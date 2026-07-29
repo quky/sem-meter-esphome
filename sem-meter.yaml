@@ -89,6 +89,12 @@ button:
     entity_category: diagnostic
     on_press:
       - rtttl.play: "two short:d=4,o=5,b=100:16e6,16e6"
+  - platform: template
+    name: "Run SEM Self-Test"
+    id: run_sem_self_test
+    entity_category: diagnostic
+    on_press:
+      - lambda: id(sem_meter_parser).run_self_test();
 
 # Onboard passive buzzer confirmed on GPIO41.
 # Requires LEDC/PWM; a static GPIO pulse does not produce a tone.
@@ -125,6 +131,24 @@ script:
     mode: single
     then:
       - rtttl.play: "wifi recovered:d=16,o=6,b=160:c,g"
+
+  # One very short neutral chirp when a manual self-test starts.
+  - id: buzzer_self_test_start
+    mode: single
+    then:
+      - rtttl.play: "self test start:d=32,o=6,b=180:e"
+
+  # Three short ascending tones when every self-test check passes.
+  - id: buzzer_self_test_pass
+    mode: single
+    then:
+      - rtttl.play: "self test pass:d=16,o=6,b=180:c,e,g"
+
+  # One long low tone followed by two short low tones on self-test failure.
+  - id: buzzer_self_test_fail
+    mode: single
+    then:
+      - rtttl.play: "self test fail:d=16,o=4,b=80:4c,16p,16c,16p,16c"
 
 text_sensor:
   - platform: wifi_info
@@ -229,6 +253,39 @@ sem_meter:
   sem_wifi_disconnect_age:
     name: "SEM WiFi Disconnect Age"
     id: sem_wifi_disconnect_age
+    disabled_by_default: false
+  sem_self_test_status:
+    name: "SEM Self-Test Status"
+    id: sem_self_test_status
+    disabled_by_default: false
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: return x == "RUNNING";
+            then:
+              - script.execute: buzzer_self_test_start
+        - if:
+            condition:
+              lambda: return x == "PASS";
+            then:
+              - script.execute: buzzer_self_test_pass
+        - if:
+            condition:
+              lambda: return x == "FAIL";
+            then:
+              - script.execute: buzzer_self_test_fail
+  sem_self_test_summary:
+    name: "SEM Self-Test Summary"
+    id: sem_self_test_summary
+    disabled_by_default: false
+  sem_self_test_failed_checks:
+    name: "SEM Self-Test Failed Checks"
+    id: sem_self_test_failed_checks
+    disabled_by_default: false
+  sem_last_self_test_duration:
+    name: "SEM Last Self-Test Duration"
+    id: sem_last_self_test_duration
     disabled_by_default: false
   milliseconds_since_last_frame:
     name: "Milliseconds Since Last Frame"

@@ -65,3 +65,7 @@ The executable uses only the C++ standard library. Its replay coverage includes:
 - Wi-Fi timeout simulation that preserves real connectivity and defaults off
 - Wrap-safe Wi-Fi outage timing across `millis()` rollover
 - Independence of the parser and Wi-Fi diagnostic state machines
+- Self-test `NOT_RUN`, `RUNNING`, `PASS`, and `FAIL` state transitions
+- Duplicate self-test start rejection and one-shot result signals
+- Parser, Wi-Fi, API, internal-state, and ordered combined failure tokens
+- Self-test duration across `millis()` rollover
