@@ -65,6 +65,10 @@ ota:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
+  on_connect:
+    - lambda: id(sem_meter_parser).set_wifi_connected(true);
+  on_disconnect:
+    - lambda: id(sem_meter_parser).set_wifi_connected(false);
 
   ap:
     ssid: "SEM Meter Fallback"
@@ -110,6 +114,18 @@ script:
     then:
       - rtttl.play: "parser recovered:d=16,o=6,b=160:g"
 
+  # Two longer descending tones, distinct from the parser warning.
+  - id: buzzer_wifi_lost
+    mode: single
+    then:
+      - rtttl.play: "wifi lost:d=8,o=5,b=90:g,e"
+
+  # Two short ascending chirps for restored Wi-Fi connectivity.
+  - id: buzzer_wifi_recovered
+    mode: single
+    then:
+      - rtttl.play: "wifi recovered:d=16,o=6,b=160:c,g"
+
 text_sensor:
   - platform: wifi_info
     ip_address:
@@ -118,6 +134,13 @@ text_sensor:
       name: "Connected SSID"
     mac_address:
       name: "MAC Address"
+
+binary_sensor:
+  - platform: status
+    name: "SEM Meter Online"
+    id: sem_meter_online
+    device_class: connectivity
+    entity_category: diagnostic
 
 time:
   - platform: sntp
@@ -156,14 +179,25 @@ sem_meter:
               lambda: return x == "UART_TIMEOUT";
             then:
               - script.execute: buzzer_parser_lost
-            else:
-              - if:
-                  condition:
-                    lambda: return x == "UART_RESTORED";
-                  then:
-                    - script.execute: buzzer_parser_recovered
+        - if:
+            condition:
+              lambda: return x == "UART_RESTORED";
+            then:
+              - script.execute: buzzer_parser_recovered
+        - if:
+            condition:
+              lambda: return x == "WIFI_TIMEOUT";
+            then:
+              - script.execute: buzzer_wifi_lost
+        - if:
+            condition:
+              lambda: return x == "WIFI_RESTORED";
+            then:
+              - script.execute: buzzer_wifi_recovered
   startup_grace_period: 30s
   uart_timeout: 10s
+  wifi_startup_grace_period: 180s
+  wifi_outage_threshold: 120s
   sem_parser_healthy:
     name: "SEM Parser Healthy"
     id: sem_parser_healthy
@@ -179,6 +213,22 @@ sem_meter:
   sem_last_parser_outage_duration:
     name: "SEM Last Parser Outage Duration"
     id: sem_last_parser_outage_duration
+    disabled_by_default: false
+  sem_wifi_healthy:
+    name: "SEM WiFi Healthy"
+    id: sem_wifi_healthy
+    disabled_by_default: false
+  sem_wifi_diagnostic_status:
+    name: "SEM WiFi Diagnostic Status"
+    id: sem_wifi_diagnostic_status
+    disabled_by_default: false
+  sem_last_wifi_outage_duration:
+    name: "SEM Last WiFi Outage Duration"
+    id: sem_last_wifi_outage_duration
+    disabled_by_default: false
+  sem_wifi_disconnect_age:
+    name: "SEM WiFi Disconnect Age"
+    id: sem_wifi_disconnect_age
     disabled_by_default: false
   milliseconds_since_last_frame:
     name: "Milliseconds Since Last Frame"
@@ -209,6 +259,18 @@ sem_meter:
     disabled_by_default: true
 
 switch:
+  - platform: template
+    name: "Simulate WiFi Timeout"
+    id: simulate_wifi_timeout
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    disabled_by_default: true
+    entity_category: diagnostic
+    turn_on_action:
+      - lambda: id(sem_meter_parser).set_wifi_timeout_simulation(true);
+    turn_off_action:
+      - lambda: id(sem_meter_parser).set_wifi_timeout_simulation(false);
+
   - platform: template
     name: "Simulate Parser Timeout"
     id: simulate_parser_timeout

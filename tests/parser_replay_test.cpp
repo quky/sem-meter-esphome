@@ -20,6 +20,8 @@ using esphome::sem_meter::ComponentEvent;
 using esphome::sem_meter::ComponentState;
 using esphome::sem_meter::DEFAULT_STARTUP_GRACE_PERIOD_MS;
 using esphome::sem_meter::DEFAULT_UART_TIMEOUT_MS;
+using esphome::sem_meter::DEFAULT_WIFI_OUTAGE_THRESHOLD_MS;
+using esphome::sem_meter::DEFAULT_WIFI_STARTUP_GRACE_PERIOD_MS;
 using esphome::sem_meter::MARKER_PRIMARY;
 using esphome::sem_meter::MARKER_SECONDARY;
 using esphome::sem_meter::MARKER_LIVE_SECONDARY;
@@ -42,14 +44,18 @@ using esphome::sem_meter::SEMMeterHealthTracker;
 using esphome::sem_meter::SEMMeterRecordParser;
 using esphome::sem_meter::SEMMeterValidator;
 using esphome::sem_meter::SEMMeterWatchdogGate;
+using esphome::sem_meter::SEMMeterWiFiHealthTracker;
 using esphome::sem_meter::STATUS_IDLE;
 using esphome::sem_meter::ValidationFailureReason;
+using esphome::sem_meter::WIFI_RECOVERED_STATUS_DURATION_MS;
+using esphome::sem_meter::WiFiDiagnosticState;
 using esphome::sem_meter::component_event_to_string;
 using esphome::sem_meter::component_state_to_string;
 using esphome::sem_meter::measurement_id_to_string;
 using esphome::sem_meter::measurement_unit_to_string;
 using esphome::sem_meter::sem_meter_is_healthy;
 using esphome::sem_meter::validation_failure_reason_to_string;
+using esphome::sem_meter::wifi_diagnostic_state_to_string;
 
 class TrackingObserver final : public SEMMeterAccumulatorObserver {
  public:
@@ -754,6 +760,13 @@ void test_yaml_entity_names() {
                   yaml.find("id: simulate_parser_timeout") != std::string::npos &&
                   yaml.find("restore_mode: ALWAYS_OFF") != std::string::npos,
               "safe parser-timeout simulation switch is missing or restorable");
+  expect_true(yaml.find("name: \"SEM Meter Online\"") != std::string::npos &&
+                  yaml.find("name: \"SEM WiFi Healthy\"") != std::string::npos &&
+                  yaml.find("name: \"SEM WiFi Diagnostic Status\"") != std::string::npos,
+              "WiFi watchdog Home Assistant diagnostics are missing");
+  expect_true(yaml.find("name: \"Simulate WiFi Timeout\"") != std::string::npos &&
+                  yaml.find("id: simulate_wifi_timeout") != std::string::npos,
+              "safe WiFi-timeout simulation switch is missing");
   std::cout << "[PASS] intentional YAML names preserve Surge Protector and A/C entity identity\n";
 }
 
@@ -793,14 +806,16 @@ void test_diagnostic_string_conversions() {
                 "component state string conversion was incorrect");
   }
 
-  const std::array<ComponentEvent, 8> events{
+  const std::array<ComponentEvent, 10> events{
       ComponentEvent::NONE,          ComponentEvent::SYSTEM_STARTED,
       ComponentEvent::UART_STARTED,  ComponentEvent::UART_TIMEOUT,
       ComponentEvent::UART_RESTORED, ComponentEvent::BUFFER_OVERFLOW,
-      ComponentEvent::MALFORMED_FRAME, ComponentEvent::INVALID_SENSOR_VALUE};
-  const std::array<const char *, 8> expected_events{
+      ComponentEvent::MALFORMED_FRAME, ComponentEvent::INVALID_SENSOR_VALUE,
+      ComponentEvent::WIFI_TIMEOUT, ComponentEvent::WIFI_RESTORED};
+  const std::array<const char *, 10> expected_events{
       "NONE",          "SYSTEM_STARTED", "UART_STARTED",  "UART_TIMEOUT",
-      "UART_RESTORED", "BUFFER_OVERFLOW", "MALFORMED_FRAME", "INVALID_SENSOR_VALUE"};
+      "UART_RESTORED", "BUFFER_OVERFLOW", "MALFORMED_FRAME", "INVALID_SENSOR_VALUE",
+      "WIFI_TIMEOUT", "WIFI_RESTORED"};
   for (size_t index = 0; index < events.size(); index++) {
     expect_true(std::string(component_event_to_string(events[index])) == expected_events[index],
                 "component event string conversion was incorrect");
@@ -818,6 +833,19 @@ void test_diagnostic_string_conversions() {
               "DATA_TIMEOUT component was reported healthy");
   expect_true(!sem_meter_is_healthy(ComponentState::RECOVERING, true),
               "RECOVERING component was reported healthy");
+
+  const std::array<WiFiDiagnosticState, 6> wifi_states{
+      WiFiDiagnosticState::STARTING, WiFiDiagnosticState::WAITING_FOR_WIFI,
+      WiFiDiagnosticState::CONNECTED, WiFiDiagnosticState::DISCONNECTED_PENDING,
+      WiFiDiagnosticState::WIFI_TIMEOUT, WiFiDiagnosticState::RECOVERED};
+  const std::array<const char *, 6> expected_wifi_states{
+      "STARTING", "WAITING_FOR_WIFI", "CONNECTED", "DISCONNECTED_PENDING",
+      "WIFI_TIMEOUT", "RECOVERED"};
+  for (size_t index = 0; index < wifi_states.size(); index++) {
+    expect_true(std::string(wifi_diagnostic_state_to_string(wifi_states[index])) ==
+                    expected_wifi_states[index],
+                "WiFi diagnostic state string conversion was incorrect");
+  }
   std::cout << "[PASS] diagnostic state, event, and aggregate health conversions are correct\n";
 }
 
@@ -1258,6 +1286,132 @@ void test_parser_timeout_simulation(const std::vector<uint8_t> &frame) {
   std::cout << "[PASS] timeout simulation gates only watchdog accepted-frame notifications\n";
 }
 
+void test_wifi_startup_and_brief_disconnect() {
+  SEMMeterWiFiHealthTracker normal_boot;
+  normal_boot.setup_completed(0);
+  expect_true(normal_boot.evaluate(1000).current_state ==
+                  WiFiDiagnosticState::WAITING_FOR_WIFI,
+              "WiFi startup did not enter WAITING_FOR_WIFI");
+  const auto connected = normal_boot.set_real_connected(true, 5000);
+  expect_true(connected.current_state == WiFiDiagnosticState::CONNECTED &&
+                  connected.event == ComponentEvent::NONE &&
+                  normal_boot.healthy(),
+              "normal initial WiFi connection raised a recovery event");
+
+  const auto pending = normal_boot.set_real_connected(false, 10000);
+  expect_true(pending.current_state == WiFiDiagnosticState::DISCONNECTED_PENDING &&
+                  normal_boot.healthy(),
+              "brief disconnect was declared unhealthy immediately");
+  expect_true(normal_boot.evaluate(
+                  10000 + DEFAULT_WIFI_OUTAGE_THRESHOLD_MS - 1).event ==
+                  ComponentEvent::NONE,
+              "brief WiFi disconnect timed out early");
+  const auto brief_recovery = normal_boot.set_real_connected(
+      true, 10000 + DEFAULT_WIFI_OUTAGE_THRESHOLD_MS - 1);
+  expect_true(brief_recovery.current_state == WiFiDiagnosticState::CONNECTED &&
+                  brief_recovery.event == ComponentEvent::NONE &&
+                  !normal_boot.has_completed_outage(),
+              "brief WiFi reconnect produced a warning, recovery, or outage duration");
+
+  SEMMeterWiFiHealthTracker never_connected;
+  never_connected.setup_completed(100);
+  expect_true(never_connected.evaluate(
+                  100 + DEFAULT_WIFI_STARTUP_GRACE_PERIOD_MS - 1).event ==
+                  ComponentEvent::NONE,
+              "never-connected WiFi timed out before startup grace");
+  const auto startup_timeout = never_connected.evaluate(
+      100 + DEFAULT_WIFI_STARTUP_GRACE_PERIOD_MS);
+  expect_true(startup_timeout.event == ComponentEvent::WIFI_TIMEOUT &&
+                  startup_timeout.current_state == WiFiDiagnosticState::WIFI_TIMEOUT &&
+                  !never_connected.healthy(),
+              "never-connected WiFi did not time out after startup grace");
+  expect_true(never_connected.evaluate(
+                  100 + DEFAULT_WIFI_STARTUP_GRACE_PERIOD_MS + 10000).event ==
+                  ComponentEvent::NONE,
+              "never-connected WiFi repeated its timeout event");
+  std::cout << "[PASS] WiFi startup grace and brief disconnect behavior are correct\n";
+}
+
+void test_wifi_sustained_outage_and_recovery() {
+  SEMMeterWiFiHealthTracker wifi;
+  wifi.setup_completed(0);
+  wifi.set_real_connected(true, 100);
+  wifi.set_real_connected(false, 1000);
+
+  const auto timeout =
+      wifi.evaluate(1000 + DEFAULT_WIFI_OUTAGE_THRESHOLD_MS);
+  expect_true(timeout.event == ComponentEvent::WIFI_TIMEOUT &&
+                  timeout.current_state == WiFiDiagnosticState::WIFI_TIMEOUT &&
+                  !wifi.healthy(),
+              "sustained WiFi disconnect did not declare one timeout");
+  expect_true(wifi.evaluate(
+                  1000 + (2 * DEFAULT_WIFI_OUTAGE_THRESHOLD_MS)).event ==
+                  ComponentEvent::NONE,
+              "sustained WiFi outage repeated its timeout event");
+
+  const uint32_t recovery_time =
+      1000 + DEFAULT_WIFI_OUTAGE_THRESHOLD_MS + 10000;
+  const auto restored = wifi.set_real_connected(true, recovery_time);
+  expect_true(restored.event == ComponentEvent::WIFI_RESTORED &&
+                  restored.current_state == WiFiDiagnosticState::RECOVERED &&
+                  wifi.healthy(),
+              "declared WiFi outage did not recover exactly once");
+  expect_true(wifi.last_completed_outage_duration_ms() == recovery_time - 1000,
+              "WiFi outage duration was incorrect");
+  expect_true(wifi.evaluate(
+                  recovery_time + WIFI_RECOVERED_STATUS_DURATION_MS - 1).current_state ==
+                  WiFiDiagnosticState::RECOVERED,
+              "RECOVERED status cleared before five seconds");
+  expect_true(wifi.evaluate(
+                  recovery_time + WIFI_RECOVERED_STATUS_DURATION_MS).current_state ==
+                  WiFiDiagnosticState::CONNECTED,
+              "RECOVERED status did not return to CONNECTED");
+  std::cout << "[PASS] sustained WiFi outage, anti-spam, duration, and recovery are correct\n";
+}
+
+void test_wifi_timeout_simulation_and_rollover() {
+  SEMMeterWiFiHealthTracker wifi;
+  expect_true(!wifi.timeout_simulation_enabled(),
+              "WiFi timeout simulation did not default OFF");
+  wifi.setup_completed(0);
+  wifi.set_real_connected(true, 100);
+  const auto simulated_disconnect =
+      wifi.set_timeout_simulation_enabled(true, 1000);
+  expect_true(simulated_disconnect.current_state ==
+                  WiFiDiagnosticState::DISCONNECTED_PENDING &&
+                  wifi.real_connected() && !wifi.effective_connected(),
+              "WiFi simulation altered or failed to mask real connectivity");
+  const auto timeout =
+      wifi.evaluate(1000 + DEFAULT_WIFI_OUTAGE_THRESHOLD_MS);
+  expect_true(timeout.event == ComponentEvent::WIFI_TIMEOUT,
+              "WiFi simulation did not cause watchdog timeout");
+  expect_true(wifi.evaluate(
+                  1000 + (2 * DEFAULT_WIFI_OUTAGE_THRESHOLD_MS)).event ==
+                  ComponentEvent::NONE,
+              "WiFi simulation repeated the timeout event");
+  const uint32_t recovery_time =
+      1000 + DEFAULT_WIFI_OUTAGE_THRESHOLD_MS + 5000;
+  const auto restored =
+      wifi.set_timeout_simulation_enabled(false, recovery_time);
+  expect_true(restored.event == ComponentEvent::WIFI_RESTORED &&
+                  wifi.real_connected() && wifi.effective_connected(),
+              "disabling WiFi simulation did not restore effective connectivity");
+  expect_true(wifi.last_completed_outage_duration_ms() == recovery_time - 1000,
+              "simulated WiFi outage duration was incorrect");
+
+  SEMMeterWiFiHealthTracker rollover;
+  const uint32_t connected_time = 0xFFFFF000U;
+  rollover.setup_completed(connected_time - 100);
+  rollover.set_real_connected(true, connected_time);
+  const uint32_t disconnected_time = 0xFFFFFF00U;
+  rollover.set_real_connected(false, disconnected_time);
+  expect_true(rollover.evaluate(
+                  disconnected_time + DEFAULT_WIFI_OUTAGE_THRESHOLD_MS).event ==
+                  ComponentEvent::WIFI_TIMEOUT,
+              "millis rollover prevented WiFi timeout");
+  std::cout << "[PASS] WiFi simulation and outage timing remain isolated and wrap-safe\n";
+}
+
 void test_wrap_safe_uart_timeout() {
   SEMMeterHealthTracker health;
   health.setup_completed(0xFFFFFE00U);
@@ -1376,6 +1530,9 @@ int main(int argc, char **argv) {
     test_uart_health_transitions();
     test_startup_grace_and_first_frame_recovery();
     test_parser_timeout_simulation(frame);
+    test_wifi_startup_and_brief_disconnect();
+    test_wifi_sustained_outage_and_recovery();
+    test_wifi_timeout_simulation_and_rollover();
     test_wrap_safe_uart_timeout();
     test_non_recursive_event_dispatch();
     test_retained_overlap(frame);

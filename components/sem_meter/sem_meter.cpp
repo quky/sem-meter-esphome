@@ -17,7 +17,10 @@ void SEMMeterComponent::setup() {
   const uint32_t now = millis();
   this->last_diagnostic_publish_ms_ = now;
   this->last_watchdog_evaluation_ms_ = now;
+  this->last_wifi_watchdog_evaluation_ms_ = now;
   this->apply_health_update_(this->health_.setup_completed(now));
+  this->wifi_health_.setup_completed(now);
+  this->publish_wifi_immediate_diagnostics_(ComponentEvent::NONE);
   this->publish_rejection_diagnostics_();
 }
 
@@ -34,6 +37,7 @@ void SEMMeterComponent::loop() {
       ESP_LOGW(TAG, "UART read failed; preserving %zu buffered bytes", this->accumulator_.buffered_size());
       const uint32_t now = millis();
       this->evaluate_watchdog_(now);
+      this->evaluate_wifi_watchdog_(now);
       this->publish_periodic_diagnostics_(now);
       this->record_loop_time_(loop_started_at);
       return;
@@ -76,6 +80,7 @@ void SEMMeterComponent::loop() {
         this->watchdog_gate_.record_accepted_frame(this->health_, now));
   }
   this->evaluate_watchdog_(now);
+  this->evaluate_wifi_watchdog_(now);
   this->publish_periodic_diagnostics_(now);
 
   this->record_loop_time_(loop_started_at);
@@ -126,6 +131,15 @@ bool SEMMeterComponent::dispatch_event_(ComponentEvent event, uint32_t timestamp
       ESP_LOGW(TAG, "Rejected one malformed or out-of-sync SEM measurement cycle");
       break;
     case ComponentEvent::INVALID_SENSOR_VALUE:
+      break;
+    case ComponentEvent::WIFI_TIMEOUT:
+      ESP_LOGW(TAG, "WiFi outage exceeded %" PRIu32 " ms",
+               this->wifi_health_.has_connected_once()
+                   ? this->wifi_health_.outage_threshold_ms()
+                   : this->wifi_health_.startup_grace_period_ms());
+      break;
+    case ComponentEvent::WIFI_RESTORED:
+      ESP_LOGI(TAG, "WiFi connectivity restored");
       break;
   }
   return true;
@@ -256,6 +270,11 @@ void SEMMeterComponent::publish_periodic_diagnostics_(uint32_t timestamp_ms) {
       this->sem_last_valid_frame_age_sensor_->publish_state(NAN);
     }
   }
+  if (this->sem_wifi_disconnect_age_sensor_ != nullptr) {
+    this->sem_wifi_disconnect_age_sensor_->publish_state(
+        static_cast<float>(this->wifi_health_.disconnect_age_ms(timestamp_ms)) /
+        1000.0f);
+  }
   if (this->frames_processed_sensor_ != nullptr) {
     this->frames_processed_sensor_->publish_state(
         static_cast<float>(this->diagnostics_.counters().frames_processed));
@@ -316,6 +335,24 @@ void SEMMeterComponent::set_parser_timeout_simulation(bool enabled) {
            enabled ? "enabled" : "disabled");
 }
 
+void SEMMeterComponent::set_wifi_connected(bool connected) {
+  const uint32_t now = millis();
+  ESP_LOGI(TAG, "WiFi connection state: %s",
+           connected ? "connected" : "disconnected");
+  this->apply_wifi_health_update_(
+      this->wifi_health_.set_real_connected(connected, now));
+}
+
+void SEMMeterComponent::set_wifi_timeout_simulation(bool enabled) {
+  if (this->wifi_health_.timeout_simulation_enabled() == enabled) {
+    return;
+  }
+  ESP_LOGI(TAG, "WiFi timeout simulation %s",
+           enabled ? "enabled" : "disabled");
+  this->apply_wifi_health_update_(
+      this->wifi_health_.set_timeout_simulation_enabled(enabled, millis()));
+}
+
 void SEMMeterComponent::on_partial_record(size_t offset) {
   ESP_LOGV(TAG, "Preserving partial record candidate at frame offset %zu", offset);
 }
@@ -337,6 +374,55 @@ void SEMMeterComponent::evaluate_watchdog_(uint32_t timestamp_ms) {
   }
   this->last_watchdog_evaluation_ms_ = timestamp_ms;
   this->apply_health_update_(this->health_.check_timeout(timestamp_ms));
+}
+
+void SEMMeterComponent::evaluate_wifi_watchdog_(uint32_t timestamp_ms) {
+  if (timestamp_ms - this->last_wifi_watchdog_evaluation_ms_ <
+      WATCHDOG_EVALUATION_INTERVAL_MS) {
+    return;
+  }
+  this->last_wifi_watchdog_evaluation_ms_ = timestamp_ms;
+  this->apply_wifi_health_update_(this->wifi_health_.evaluate(timestamp_ms));
+}
+
+void SEMMeterComponent::apply_wifi_health_update_(const WiFiHealthUpdate &update) {
+  if (!update.state_changed() && update.event == ComponentEvent::NONE) {
+    return;
+  }
+
+  if (update.state_changed()) {
+    ESP_LOGI(TAG, "WiFi diagnostic state changed: %s -> %s",
+             wifi_diagnostic_state_to_string(update.previous_state),
+             wifi_diagnostic_state_to_string(update.current_state));
+  }
+
+  const bool event_dispatched =
+      this->dispatch_event_(update.event, update.timestamp_ms);
+  if (event_dispatched) {
+    this->publish_immediate_diagnostics_(update.event);
+  }
+  this->publish_wifi_immediate_diagnostics_(update.event);
+}
+
+void SEMMeterComponent::publish_wifi_immediate_diagnostics_(
+    ComponentEvent transition_event) {
+  if (this->sem_wifi_diagnostic_status_text_sensor_ != nullptr) {
+    this->sem_wifi_diagnostic_status_text_sensor_->publish_state(
+        wifi_diagnostic_state_to_string(this->wifi_health_.state()));
+  }
+  if (transition_event == ComponentEvent::WIFI_RESTORED &&
+      this->sem_last_wifi_outage_duration_sensor_ != nullptr &&
+      this->wifi_health_.has_completed_outage()) {
+    this->sem_last_wifi_outage_duration_sensor_->publish_state(
+        static_cast<float>(
+            this->wifi_health_.last_completed_outage_duration_ms()) /
+        1000.0f);
+  }
+  // Publish the automation trigger after associated status and duration.
+  if (this->sem_wifi_healthy_binary_sensor_ != nullptr) {
+    this->sem_wifi_healthy_binary_sensor_->publish_state(
+        this->wifi_health_.healthy());
+  }
 }
 
 bool SEMMeterComponent::all_measurements_ready_(MeasurementId first, MeasurementId last) const {
@@ -391,6 +477,10 @@ void SEMMeterComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "  UART valid-frame timeout: %" PRIu32 " ms", this->health_.uart_timeout_ms());
   ESP_LOGCONFIG(TAG, "  Startup grace period: %" PRIu32 " ms",
                 this->health_.startup_grace_period_ms());
+  ESP_LOGCONFIG(TAG, "  WiFi startup grace period: %" PRIu32 " ms",
+                this->wifi_health_.startup_grace_period_ms());
+  ESP_LOGCONFIG(TAG, "  WiFi outage threshold: %" PRIu32 " ms",
+                this->wifi_health_.outage_threshold_ms());
   ESP_LOGCONFIG(TAG, "  Record markers: 0x%02X, 0x%02X, 0x%02X", MARKER_PRIMARY,
                 MARKER_SECONDARY, MARKER_LIVE_SECONDARY);
   ESP_LOGCONFIG(TAG, "  Branch power divisor: %.3f", this->accumulator_.parser().get_branch_power_divisor());

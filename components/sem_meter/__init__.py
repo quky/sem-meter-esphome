@@ -32,6 +32,12 @@ CONF_SEM_PARSER_HEALTHY = "sem_parser_healthy"
 CONF_SEM_DIAGNOSTIC_STATUS = "sem_diagnostic_status"
 CONF_SEM_LAST_VALID_FRAME_AGE = "sem_last_valid_frame_age"
 CONF_SEM_LAST_PARSER_OUTAGE_DURATION = "sem_last_parser_outage_duration"
+CONF_WIFI_STARTUP_GRACE_PERIOD = "wifi_startup_grace_period"
+CONF_WIFI_OUTAGE_THRESHOLD = "wifi_outage_threshold"
+CONF_SEM_WIFI_HEALTHY = "sem_wifi_healthy"
+CONF_SEM_WIFI_DIAGNOSTIC_STATUS = "sem_wifi_diagnostic_status"
+CONF_SEM_LAST_WIFI_OUTAGE_DURATION = "sem_last_wifi_outage_duration"
+CONF_SEM_WIFI_DISCONNECT_AGE = "sem_wifi_disconnect_age"
 CONF_PHASE_VOLTAGE_MAXIMUM_DELTA = "phase_voltage_maximum_delta"
 CONF_LINE_FREQUENCY_MAXIMUM_DELTA = "line_frequency_maximum_delta"
 CONF_CIRCUIT_POWER_MAXIMUM_DELTA = "circuit_power_maximum_delta"
@@ -56,6 +62,12 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_UART_TIMEOUT, default="10s"): cv.positive_time_period_milliseconds,
             cv.Optional(
                 CONF_STARTUP_GRACE_PERIOD, default="30s"
+            ): cv.positive_time_period_milliseconds,
+            cv.Optional(
+                CONF_WIFI_STARTUP_GRACE_PERIOD, default="180s"
+            ): cv.positive_time_period_milliseconds,
+            cv.Optional(
+                CONF_WIFI_OUTAGE_THRESHOLD, default="120s"
             ): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_PHASE_VOLTAGE_MAXIMUM_DELTA, default=40.0): cv.positive_float,
             cv.Optional(CONF_LINE_FREQUENCY_MAXIMUM_DELTA, default=10.0): cv.positive_float,
@@ -134,6 +146,24 @@ CONFIG_SCHEMA = (
                 state_class=STATE_CLASS_MEASUREMENT,
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             ),
+            cv.Optional(CONF_SEM_WIFI_HEALTHY): binary_sensor.binary_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_WIFI_DIAGNOSTIC_STATUS): text_sensor.text_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_LAST_WIFI_OUTAGE_DURATION): sensor.sensor_schema(
+                unit_of_measurement=UNIT_SECOND,
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_MEASUREMENT,
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_WIFI_DISCONNECT_AGE): sensor.sensor_schema(
+                unit_of_measurement=UNIT_SECOND,
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_MEASUREMENT,
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
         }
     )
     .extend(cv.COMPONENT_SCHEMA)
@@ -161,6 +191,16 @@ async def to_code(config):
     cg.add(
         var.set_startup_grace_period_ms(
             config[CONF_STARTUP_GRACE_PERIOD].total_milliseconds
+        )
+    )
+    cg.add(
+        var.set_wifi_startup_grace_period_ms(
+            config[CONF_WIFI_STARTUP_GRACE_PERIOD].total_milliseconds
+        )
+    )
+    cg.add(
+        var.set_wifi_outage_threshold_ms(
+            config[CONF_WIFI_OUTAGE_THRESHOLD].total_milliseconds
         )
     )
     cg.add(
@@ -242,3 +282,17 @@ async def to_code(config):
             config[CONF_SEM_LAST_PARSER_OUTAGE_DURATION]
         )
         cg.add(var.set_sem_last_parser_outage_duration_sensor(sens))
+    if CONF_SEM_WIFI_HEALTHY in config:
+        sens = await binary_sensor.new_binary_sensor(config[CONF_SEM_WIFI_HEALTHY])
+        cg.add(var.set_sem_wifi_healthy_binary_sensor(sens))
+    if CONF_SEM_WIFI_DIAGNOSTIC_STATUS in config:
+        sens = await text_sensor.new_text_sensor(
+            config[CONF_SEM_WIFI_DIAGNOSTIC_STATUS]
+        )
+        cg.add(var.set_sem_wifi_diagnostic_status_text_sensor(sens))
+    if CONF_SEM_LAST_WIFI_OUTAGE_DURATION in config:
+        sens = await sensor.new_sensor(config[CONF_SEM_LAST_WIFI_OUTAGE_DURATION])
+        cg.add(var.set_sem_last_wifi_outage_duration_sensor(sens))
+    if CONF_SEM_WIFI_DISCONNECT_AGE in config:
+        sens = await sensor.new_sensor(config[CONF_SEM_WIFI_DISCONNECT_AGE])
+        cg.add(var.set_sem_wifi_disconnect_age_sensor(sens))

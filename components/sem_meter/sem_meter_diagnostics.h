@@ -22,6 +22,8 @@ enum class ComponentEvent {
   BUFFER_OVERFLOW,
   MALFORMED_FRAME,
   INVALID_SENSOR_VALUE,
+  WIFI_TIMEOUT,
+  WIFI_RESTORED,
 };
 
 inline const char *component_state_to_string(ComponentState state) {
@@ -58,6 +60,10 @@ inline const char *component_event_to_string(ComponentEvent event) {
       return "MALFORMED_FRAME";
     case ComponentEvent::INVALID_SENSOR_VALUE:
       return "INVALID_SENSOR_VALUE";
+    case ComponentEvent::WIFI_TIMEOUT:
+      return "WIFI_TIMEOUT";
+    case ComponentEvent::WIFI_RESTORED:
+      return "WIFI_RESTORED";
   }
   return "UNKNOWN";
 }
@@ -68,6 +74,9 @@ inline bool sem_meter_is_healthy(ComponentState state, bool uart_healthy) {
 
 inline constexpr uint32_t DEFAULT_UART_TIMEOUT_MS = 10000;
 inline constexpr uint32_t DEFAULT_STARTUP_GRACE_PERIOD_MS = 30000;
+inline constexpr uint32_t DEFAULT_WIFI_STARTUP_GRACE_PERIOD_MS = 180000;
+inline constexpr uint32_t DEFAULT_WIFI_OUTAGE_THRESHOLD_MS = 120000;
+inline constexpr uint32_t WIFI_RECOVERED_STATUS_DURATION_MS = 5000;
 inline constexpr size_t MAX_EVENT_LISTENERS = 1;
 
 class SEMMeterEventListener {
@@ -284,6 +293,222 @@ class SEMMeterWatchdogGate {
 
  private:
   bool timeout_simulation_enabled_{false};
+};
+
+enum class WiFiDiagnosticState {
+  STARTING,
+  WAITING_FOR_WIFI,
+  CONNECTED,
+  DISCONNECTED_PENDING,
+  WIFI_TIMEOUT,
+  RECOVERED,
+};
+
+inline const char *wifi_diagnostic_state_to_string(WiFiDiagnosticState state) {
+  switch (state) {
+    case WiFiDiagnosticState::STARTING:
+      return "STARTING";
+    case WiFiDiagnosticState::WAITING_FOR_WIFI:
+      return "WAITING_FOR_WIFI";
+    case WiFiDiagnosticState::CONNECTED:
+      return "CONNECTED";
+    case WiFiDiagnosticState::DISCONNECTED_PENDING:
+      return "DISCONNECTED_PENDING";
+    case WiFiDiagnosticState::WIFI_TIMEOUT:
+      return "WIFI_TIMEOUT";
+    case WiFiDiagnosticState::RECOVERED:
+      return "RECOVERED";
+  }
+  return "UNKNOWN";
+}
+
+struct WiFiHealthUpdate {
+  WiFiDiagnosticState previous_state{WiFiDiagnosticState::STARTING};
+  WiFiDiagnosticState current_state{WiFiDiagnosticState::STARTING};
+  ComponentEvent event{ComponentEvent::NONE};
+  uint32_t timestamp_ms{0};
+
+  bool state_changed() const { return this->previous_state != this->current_state; }
+};
+
+class SEMMeterWiFiHealthTracker {
+ public:
+  explicit SEMMeterWiFiHealthTracker(
+      uint32_t startup_grace_period_ms = DEFAULT_WIFI_STARTUP_GRACE_PERIOD_MS,
+      uint32_t outage_threshold_ms = DEFAULT_WIFI_OUTAGE_THRESHOLD_MS)
+      : startup_grace_period_ms_(startup_grace_period_ms),
+        outage_threshold_ms_(outage_threshold_ms) {}
+
+  WiFiHealthUpdate setup_completed(uint32_t timestamp_ms) {
+    if (this->setup_completed_) {
+      return this->no_change_();
+    }
+    this->setup_completed_ = true;
+    this->setup_timestamp_ms_ = timestamp_ms;
+    this->disconnect_started_timestamp_ms_ = timestamp_ms;
+    return this->no_change_();
+  }
+
+  WiFiHealthUpdate set_real_connected(bool connected, uint32_t timestamp_ms) {
+    if (this->real_connected_ == connected) {
+      return this->no_change_();
+    }
+
+    const bool was_effectively_connected = this->effective_connected_();
+    this->real_connected_ = connected;
+    if (connected) {
+      this->has_connected_once_ = true;
+    }
+    const bool is_effectively_connected = this->effective_connected_();
+
+    if (was_effectively_connected == is_effectively_connected) {
+      return this->no_change_();
+    }
+    return is_effectively_connected ? this->record_effective_connection_(timestamp_ms)
+                                    : this->record_effective_disconnection_(timestamp_ms);
+  }
+
+  WiFiHealthUpdate set_timeout_simulation_enabled(bool enabled,
+                                                   uint32_t timestamp_ms) {
+    if (this->timeout_simulation_enabled_ == enabled) {
+      return this->no_change_();
+    }
+
+    const bool was_effectively_connected = this->effective_connected_();
+    this->timeout_simulation_enabled_ = enabled;
+    const bool is_effectively_connected = this->effective_connected_();
+
+    if (was_effectively_connected == is_effectively_connected) {
+      return this->no_change_();
+    }
+    return is_effectively_connected ? this->record_effective_connection_(timestamp_ms)
+                                    : this->record_effective_disconnection_(timestamp_ms);
+  }
+
+  WiFiHealthUpdate evaluate(uint32_t timestamp_ms) {
+    if (this->effective_connected_()) {
+      if (this->state_ == WiFiDiagnosticState::RECOVERED &&
+          timestamp_ms - this->recovered_timestamp_ms_ >=
+              WIFI_RECOVERED_STATUS_DURATION_MS) {
+        return this->transition_(WiFiDiagnosticState::CONNECTED,
+                                 ComponentEvent::NONE, timestamp_ms);
+      }
+      return this->no_change_();
+    }
+
+    if (!this->setup_completed_ || this->outage_declared_) {
+      return this->no_change_();
+    }
+
+    if (!this->has_connected_once_) {
+      const uint32_t elapsed_ms = timestamp_ms - this->setup_timestamp_ms_;
+      if (elapsed_ms < this->startup_grace_period_ms_) {
+        if (this->state_ == WiFiDiagnosticState::STARTING) {
+          return this->transition_(WiFiDiagnosticState::WAITING_FOR_WIFI,
+                                   ComponentEvent::NONE, timestamp_ms);
+        }
+        return this->no_change_();
+      }
+    } else {
+      const uint32_t elapsed_ms =
+          timestamp_ms - this->disconnect_started_timestamp_ms_;
+      if (elapsed_ms < this->outage_threshold_ms_) {
+        return this->no_change_();
+      }
+    }
+
+    this->outage_declared_ = true;
+    return this->transition_(WiFiDiagnosticState::WIFI_TIMEOUT,
+                             ComponentEvent::WIFI_TIMEOUT, timestamp_ms);
+  }
+
+  WiFiDiagnosticState state() const { return this->state_; }
+  bool real_connected() const { return this->real_connected_; }
+  bool effective_connected() const { return this->effective_connected_(); }
+  bool has_connected_once() const { return this->has_connected_once_; }
+  bool outage_declared() const { return this->outage_declared_; }
+  bool healthy() const {
+    return this->has_connected_once_ && !this->outage_declared_;
+  }
+  bool timeout_simulation_enabled() const {
+    return this->timeout_simulation_enabled_;
+  }
+  bool has_completed_outage() const { return this->has_completed_outage_; }
+  uint32_t disconnect_started_timestamp_ms() const {
+    return this->disconnect_started_timestamp_ms_;
+  }
+  uint32_t last_completed_outage_duration_ms() const {
+    return this->last_completed_outage_duration_ms_;
+  }
+  uint32_t disconnect_age_ms(uint32_t timestamp_ms) const {
+    if (this->effective_connected_()) {
+      return 0;
+    }
+    return timestamp_ms - this->disconnect_started_timestamp_ms_;
+  }
+  uint32_t startup_grace_period_ms() const {
+    return this->startup_grace_period_ms_;
+  }
+  uint32_t outage_threshold_ms() const { return this->outage_threshold_ms_; }
+  void set_startup_grace_period_ms(uint32_t grace_period_ms) {
+    this->startup_grace_period_ms_ = grace_period_ms;
+  }
+  void set_outage_threshold_ms(uint32_t threshold_ms) {
+    this->outage_threshold_ms_ = threshold_ms;
+  }
+
+ private:
+  bool effective_connected_() const {
+    return this->real_connected_ && !this->timeout_simulation_enabled_;
+  }
+
+  WiFiHealthUpdate record_effective_disconnection_(uint32_t timestamp_ms) {
+    this->disconnect_started_timestamp_ms_ = timestamp_ms;
+    this->outage_declared_ = false;
+    return this->transition_(WiFiDiagnosticState::DISCONNECTED_PENDING,
+                             ComponentEvent::NONE, timestamp_ms);
+  }
+
+  WiFiHealthUpdate record_effective_connection_(uint32_t timestamp_ms) {
+    if (this->outage_declared_) {
+      this->last_completed_outage_duration_ms_ =
+          timestamp_ms - this->disconnect_started_timestamp_ms_;
+      this->has_completed_outage_ = true;
+      this->outage_declared_ = false;
+      this->recovered_timestamp_ms_ = timestamp_ms;
+      return this->transition_(WiFiDiagnosticState::RECOVERED,
+                               ComponentEvent::WIFI_RESTORED, timestamp_ms);
+    }
+
+    this->outage_declared_ = false;
+    return this->transition_(WiFiDiagnosticState::CONNECTED,
+                             ComponentEvent::NONE, timestamp_ms);
+  }
+
+  WiFiHealthUpdate no_change_() const {
+    return {this->state_, this->state_, ComponentEvent::NONE, 0};
+  }
+
+  WiFiHealthUpdate transition_(WiFiDiagnosticState new_state,
+                               ComponentEvent event, uint32_t timestamp_ms) {
+    const WiFiDiagnosticState previous_state = this->state_;
+    this->state_ = new_state;
+    return {previous_state, this->state_, event, timestamp_ms};
+  }
+
+  WiFiDiagnosticState state_{WiFiDiagnosticState::STARTING};
+  uint32_t setup_timestamp_ms_{0};
+  uint32_t disconnect_started_timestamp_ms_{0};
+  uint32_t recovered_timestamp_ms_{0};
+  uint32_t last_completed_outage_duration_ms_{0};
+  uint32_t startup_grace_period_ms_{DEFAULT_WIFI_STARTUP_GRACE_PERIOD_MS};
+  uint32_t outage_threshold_ms_{DEFAULT_WIFI_OUTAGE_THRESHOLD_MS};
+  bool setup_completed_{false};
+  bool real_connected_{false};
+  bool has_connected_once_{false};
+  bool outage_declared_{false};
+  bool timeout_simulation_enabled_{false};
+  bool has_completed_outage_{false};
 };
 
 struct TimingStatistics {

@@ -57,3 +57,11 @@ The executable uses only the C++ standard library. Its replay coverage includes:
 - Watchdog-only timeout simulation that defaults off
 - Continued parser and electrical-output updates during simulation
 - One-shot simulated timeout, recovery, and outage-duration tracking
+- Wi-Fi connection within the 180-second startup grace without alerts
+- Never-connected Wi-Fi timeout and one-shot event behavior
+- Brief disconnection below the 120-second threshold without an outage
+- Sustained Wi-Fi timeout, recovery, completed duration, and five-second
+  `RECOVERED` state
+- Wi-Fi timeout simulation that preserves real connectivity and defaults off
+- Wrap-safe Wi-Fi outage timing across `millis()` rollover
+- Independence of the parser and Wi-Fi diagnostic state machines

@@ -23,6 +23,8 @@ tasks.
 - GPIO41 passive-buzzer support using LEDC/PWM and RTTTL
 - One-shot parser timeout and recovery alerts with a 30-second startup grace
 - Safe, always-off-after-reboot parser-timeout simulation for installed-system testing
+- One-shot Wi-Fi timeout and recovery alerts with conservative 180/120-second timing
+- Safe Wi-Fi-timeout simulation that leaves Wi-Fi, API, UART, and measurements running
 - Fixed-capacity 447-byte UART frame accumulation
 - Support for `0xFF`, captured-fixture `0x3B`, and live-stream `0x3C` record markers
 - Host-side captured-frame, recovery, diagnostics, and AddressSanitizer tests
@@ -45,10 +47,19 @@ allows 30 seconds for startup synchronization, then requires an accepted frame
 at least every 10 seconds. Its buzzer alerts occur once per failure or recovery
 transition and never repeat continuously.
 
-Home Assistant—not ESPHome—owns Telegram delivery. See the
-[parser watchdog and notification guide](docs/diagnostics.md) for entity
-semantics, the safe timeout-simulation procedure, complete lost/restored
-automation examples, and troubleshooting.
+Wi-Fi diagnostics add `SEM Meter Online`, `SEM WiFi Healthy`, `SEM WiFi
+Diagnostic Status`, `SEM WiFi Disconnect Age`, and `SEM Last WiFi Outage
+Duration`. A normal initial connection is silent. A node that never connects
+times out after 180 seconds; after a previous connection, only a sustained
+120-second outage raises one distinct local alert. Recovery records the outage
+duration and plays one distinct chirp.
+
+Parser health and Wi-Fi health answer different questions: parser health says
+whether current SEM measurement cycles are being accepted; Wi-Fi health says
+whether the network connection is healthy. Home Assistant—not ESPHome—owns
+Telegram delivery. See the [watchdog and notification guide](docs/diagnostics.md)
+for entity semantics, both safe simulations, real and simulated Telegram
+automation examples, hardware test procedures, and troubleshooting.
 
 ## Sensor value validation
 

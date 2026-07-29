@@ -92,6 +92,18 @@ class SEMMeterComponent final : public Component,
   void set_sem_last_parser_outage_duration_sensor(sensor::Sensor *sensor) {
     this->sem_last_parser_outage_duration_sensor_ = sensor;
   }
+  void set_sem_wifi_healthy_binary_sensor(binary_sensor::BinarySensor *sensor) {
+    this->sem_wifi_healthy_binary_sensor_ = sensor;
+  }
+  void set_sem_wifi_diagnostic_status_text_sensor(text_sensor::TextSensor *sensor) {
+    this->sem_wifi_diagnostic_status_text_sensor_ = sensor;
+  }
+  void set_sem_last_wifi_outage_duration_sensor(sensor::Sensor *sensor) {
+    this->sem_last_wifi_outage_duration_sensor_ = sensor;
+  }
+  void set_sem_wifi_disconnect_age_sensor(sensor::Sensor *sensor) {
+    this->sem_wifi_disconnect_age_sensor_ = sensor;
+  }
 
   float get_branch_power(size_t index) const { return this->accumulator_.parser().get_branch_power(index); }
   float get_phase_a_power() const { return this->accumulator_.parser().get_phase_a_power(); }
@@ -138,6 +150,17 @@ class SEMMeterComponent final : public Component,
   void set_parser_timeout_simulation(bool enabled);
   bool get_parser_timeout_simulation() const {
     return this->watchdog_gate_.timeout_simulation_enabled();
+  }
+  void set_wifi_connected(bool connected);
+  void set_wifi_timeout_simulation(bool enabled);
+  bool get_wifi_timeout_simulation() const {
+    return this->wifi_health_.timeout_simulation_enabled();
+  }
+  void set_wifi_startup_grace_period_ms(uint32_t grace_period_ms) {
+    this->wifi_health_.set_startup_grace_period_ms(grace_period_ms);
+  }
+  void set_wifi_outage_threshold_ms(uint32_t threshold_ms) {
+    this->wifi_health_.set_outage_threshold_ms(threshold_ms);
   }
   uint64_t get_rejected_sensor_values() const {
     return this->validator_.rejected_sensor_values();
@@ -190,6 +213,9 @@ class SEMMeterComponent final : public Component,
   void publish_immediate_diagnostics_(ComponentEvent transition_event = ComponentEvent::NONE);
   void publish_rejection_diagnostics_();
   void evaluate_watchdog_(uint32_t timestamp_ms);
+  void evaluate_wifi_watchdog_(uint32_t timestamp_ms);
+  void apply_wifi_health_update_(const WiFiHealthUpdate &update);
+  void publish_wifi_immediate_diagnostics_(ComponentEvent transition_event);
   const char *diagnostic_status_(ComponentEvent transition_event) const;
   void update_measurement_readiness_(uint8_t record_id);
   bool all_measurements_ready_(MeasurementId first, MeasurementId last) const;
@@ -203,6 +229,7 @@ class SEMMeterComponent final : public Component,
   SEMMeterDiagnostics diagnostics_{};
   SEMMeterHealthTracker health_{};
   SEMMeterWatchdogGate watchdog_gate_{};
+  SEMMeterWiFiHealthTracker wifi_health_{};
   SEMMeterEventDispatcher event_dispatcher_{};
   SEMMeterValidator validator_{};
   SEMMeterValidator cycle_validator_{};
@@ -223,8 +250,13 @@ class SEMMeterComponent final : public Component,
   text_sensor::TextSensor *sem_diagnostic_status_text_sensor_{nullptr};
   sensor::Sensor *sem_last_valid_frame_age_sensor_{nullptr};
   sensor::Sensor *sem_last_parser_outage_duration_sensor_{nullptr};
+  binary_sensor::BinarySensor *sem_wifi_healthy_binary_sensor_{nullptr};
+  text_sensor::TextSensor *sem_wifi_diagnostic_status_text_sensor_{nullptr};
+  sensor::Sensor *sem_last_wifi_outage_duration_sensor_{nullptr};
+  sensor::Sensor *sem_wifi_disconnect_age_sensor_{nullptr};
   uint32_t last_diagnostic_publish_ms_{0};
   uint32_t last_watchdog_evaluation_ms_{0};
+  uint32_t last_wifi_watchdog_evaluation_ms_{0};
   uint32_t recovered_status_timestamp_ms_{0};
   bool recovered_status_active_{false};
   bool waiting_status_published_{false};

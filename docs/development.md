@@ -19,7 +19,7 @@ The local `sem_meter` component separates responsibilities:
 | --- | --- |
 | `sem_meter_parser.h` | ESPHome-independent record validation and field decoding |
 | `sem_meter_accumulator.h` | Fixed-capacity stream accumulation and bounded frame processing |
-| `sem_meter_diagnostics.h` | Counters, timing, parser-watchdog state, outage duration, and bounded event dispatch |
+| `sem_meter_diagnostics.h` | Counters, timing, independent parser/Wi-Fi health state machines, outage durations, and bounded event dispatch |
 | `sem_meter.h/.cpp` | UART integration, loop budgets, logging, and component getters |
 | `__init__.py` | ESPHome schema, UART registration, and configurable calibration |
 
@@ -31,6 +31,18 @@ cycle. It evaluates health once per second, while YAML listens to its
 one-shot timeout and restoration events to run centralized GPIO41 buzzer
 scripts. See [the diagnostics guide](diagnostics.md) for entity semantics and
 Home Assistant notification examples.
+
+The Wi-Fi state machine is also ESPHome-independent. Official `wifi`
+`on_connect`/`on_disconnect` triggers supply the real connection state, while
+the component evaluates its wrap-safe timers approximately once per second.
+Its simulation flag masks only the state-machine input; it never disables the
+radio, API, parser, or sensor publication. Parser and Wi-Fi timeout simulations
+are separate and can be tested independently.
+
+All buzzer sequences are centralized as `mode: single` YAML scripts. If two
+different alerts arrive while RTTTL is already playing, the shared RTTTL
+player may replace the current tone sequence; neither event is queued
+unboundedly and this has no effect on UART or parser state.
 
 ## Behavioral invariants
 

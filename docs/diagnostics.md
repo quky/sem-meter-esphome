@@ -1,4 +1,4 @@
-# Parser Watchdog and Notifications
+# Parser and Wi-Fi Watchdogs
 
 ## Architecture
 
@@ -27,6 +27,12 @@ Telegram is intentionally handled by Home Assistant:
 - The onboard buzzer gives an immediate local warning.
 - Telegram supplies a detailed remote notification.
 
+Wi-Fi health is tracked independently from parser health. ESPHome's official
+`wifi.on_connect` and `wifi.on_disconnect` triggers update a bounded,
+ESPHome-independent state machine. The component checks its timers about once
+per second. A Wi-Fi outage does not stop local UART parsing, electrical
+validation, energy calculation, or the local buzzer.
+
 ## Confirmed buzzer hardware
 
 The W338 meter's onboard buzzer is a passive transducer connected to GPIO41.
@@ -39,12 +45,16 @@ Available patterns are:
 | Buzzer Two Beeps | Manual hardware test | Two short beeps on demand |
 | Parser lost | Communication failure | Three short separated warning beeps, once |
 | Parser recovered | Communication recovery | One short positive chirp, once |
+| Wi-Fi lost | Sustained network failure | Two longer descending tones, once |
+| Wi-Fi recovered | Network recovery | Two short ascending chirps, once |
 
 The manual `Buzzer Two Beeps` button is disabled by default and categorized as
 a diagnostic entity. Enable it from the device's entity settings in Home
 Assistant before using it.
 
 ## Watchdog timing
+
+Parser timing:
 
 - A 30-second grace period after component startup allows UART synchronization.
 - No loss alarm occurs during that grace period.
@@ -59,6 +69,22 @@ Assistant before using it.
   `UART_RESTORED`, so it does not play a recovery chirp.
 - All elapsed-time calculations use wrap-safe unsigned millisecond arithmetic.
 
+Wi-Fi timing:
+
+- A 180-second initial grace period allows a normal first connection without a
+  warning or recovery sound.
+- If Wi-Fi has never connected after that grace period, one `WIFI_TIMEOUT`
+  event and one Wi-Fi warning pattern are raised.
+- After the first connection, a disconnect starts a pending timer immediately.
+- A reconnect before 120 seconds clears the pending outage silently and does
+  not record an outage duration.
+- A disconnect lasting at least 120 seconds raises one `WIFI_TIMEOUT`; the
+  warning never repeats during that outage.
+- Recovery after a declared outage raises one `WIFI_RESTORED`, records the
+  complete outage duration, and shows `RECOVERED` for five seconds.
+- A normal first connection never produces a recovery sound.
+- All elapsed-time calculations remain correct across `millis()` rollover.
+
 ## Home Assistant entity reference
 
 Home Assistant may prepend the ESPHome device name to generated entity IDs.
@@ -72,6 +98,12 @@ Meter** before using the examples below.
 | SEM Last Valid Frame Age | `sensor.sem_meter_sem_last_valid_frame_age` | Sensor | s | Seconds since the most recently accepted frame | Near `0` |
 | SEM Last Parser Outage Duration | `sensor.sem_meter_sem_last_parser_outage_duration` | Sensor | s | Duration of the most recently recovered outage | Last completed duration |
 | Simulate Parser Timeout | `switch.sem_meter_simulate_parser_timeout` | Switch | — | Diagnostic-only watchdog input suppression | `off` |
+| SEM Meter Online | `binary_sensor.sem_meter_sem_meter_online` | Binary sensor | — | Standard ESPHome/API reachability used for real remote outage detection | `on` |
+| SEM WiFi Healthy | `binary_sensor.sem_meter_sem_wifi_healthy` | Binary sensor | — | Firmware-declared Wi-Fi health; useful for simulation and post-reconnection diagnosis | `on` after first connection |
+| SEM WiFi Diagnostic Status | `text_sensor.sem_meter_sem_wifi_diagnostic_status` | Text sensor | — | Wi-Fi state-machine status | `CONNECTED` |
+| SEM Last WiFi Outage Duration | `sensor.sem_meter_sem_last_wifi_outage_duration` | Sensor | s | Duration of the most recently recovered declared Wi-Fi outage | Last completed duration |
+| SEM WiFi Disconnect Age | `sensor.sem_meter_sem_wifi_disconnect_age` | Sensor | s | Current real or simulated disconnect age; zero while effectively connected | `0` |
+| Simulate WiFi Timeout | `switch.sem_meter_simulate_wifi_timeout` | Switch | — | Diagnostic-only Wi-Fi state-machine input override | `off` |
 | Last Event | `text_sensor.sem_meter_last_event` | Text sensor | — | Latest internal reliability event | Usually `UART_STARTED` or another recent event |
 | WiFi Signal | `sensor.sem_meter_wifi_signal` | Sensor | dBm | Device Wi-Fi signal, independent of SEM UART health | Site dependent |
 
@@ -96,6 +128,22 @@ its local warning still sounds after 30 seconds, and Home Assistant shows
 
 `RECOVERED` remains visible for one diagnostic update interval, then returns to
 `RECEIVING_DATA`.
+
+`SEM WiFi Diagnostic Status` uses:
+
+- `STARTING`
+- `WAITING_FOR_WIFI`
+- `CONNECTED`
+- `DISCONNECTED_PENDING`
+- `WIFI_TIMEOUT`
+- `RECOVERED`
+
+`SEM Meter Online` and `SEM WiFi Healthy` are intentionally different. The
+standard online sensor is the Home Assistant-visible indication that the
+ESPHome node/API is reachable. `SEM WiFi Healthy` is firmware-owned diagnostic
+state. During a real physical disconnection its new state cannot reach Home
+Assistant until the connection returns, so it is not the correct source for
+the immediate remote lost notification.
 
 ## Safe parser-timeout simulation
 
@@ -135,11 +183,42 @@ To run the hardware test:
 Do not leave the simulation enabled after testing. Rebooting is also guaranteed
 to clear it because the switch never restores its previous state.
 
+## Safe Wi-Fi-timeout simulation
+
+`Simulate WiFi Timeout` tests the Wi-Fi watchdog without disconnecting the
+radio, API, or Home Assistant. It masks only the connectivity input seen by
+the Wi-Fi health state machine. UART reception, parsing, validation, electrical
+sensor publication, and energy calculation continue unchanged.
+
+The switch is diagnostic-only, disabled by default, and uses
+`restore_mode: ALWAYS_OFF`; both its Home Assistant state and internal boolean
+start off after every reboot.
+
+To run the hardware test:
+
+1. In the SEM Meter device page, enable the disabled `Simulate WiFi Timeout`
+   entity.
+2. Confirm `SEM Meter Online` and `SEM WiFi Healthy` are on, Wi-Fi status is
+   `CONNECTED`, disconnect age is zero, and electrical readings update.
+3. Turn `Simulate WiFi Timeout` on. Confirm the device remains reachable and
+   measurements continue updating.
+4. Before 120 seconds, confirm the status is `DISCONNECTED_PENDING` and no
+   sound has played.
+5. At 120 seconds, confirm `SEM WiFi Healthy` turns off, status becomes
+   `WIFI_TIMEOUT`, and the two descending warning tones play exactly once.
+6. Leave the switch on long enough to confirm the warning does not repeat.
+7. Turn the switch off. On the next evaluation, confirm one ascending recovery
+   chirp, health on, `RECOVERED`, and a completed outage duration.
+8. After five seconds, confirm status returns to `CONNECTED` and disconnect age
+   returns to zero.
+
+The simulation is diagnostic-only. Turn it off after testing; a reboot also
+guarantees that it is cleared.
+
 ## Telegram automation examples
 
-Replace `notify.telegram` and every example entity ID with the services and
-entity IDs generated by your Home Assistant installation. The Wi-Fi signal
-line is optional.
+Replace the placeholder Telegram config-entry ID, chat ID, and all example
+entity IDs with values from your Home Assistant installation.
 
 ### Parser communication lost
 
@@ -201,6 +280,125 @@ action:
 The `Last Event` condition prevents an ordinary first valid frame after boot
 from being reported as an outage recovery.
 
+### Real Wi-Fi connection lost
+
+A physically disconnected ESPHome device cannot publish its internal Wi-Fi
+state. For a real remote outage, trigger from the standard `SEM Meter Online`
+entity. Depending on Home Assistant integration behavior it can become `off`
+or `unavailable`, so this automation handles either state and requires it to
+persist for two minutes.
+
+```yaml
+alias: "Garage SEM Meter - WiFi Connection Lost"
+description: "Alert when Home Assistant cannot reach the SEM Meter for two minutes."
+mode: single
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.sem_meter_sem_meter_online
+    to: "off"
+    for: "00:02:00"
+  - trigger: state
+    entity_id: binary_sensor.sem_meter_sem_meter_online
+    to: "unavailable"
+    for: "00:02:00"
+actions:
+  - action: telegram_bot.send_message
+    data:
+      config_entry_id: <telegram_config_entry_id>
+      target: <chat_id>
+      title: "⚠️ SEM Meter WiFi Connection Lost"
+      message: >-
+        Home Assistant can no longer reach the Garage SEM Meter.
+        Parser and electrical values may be stale.
+        If the meter is still operating, its local buzzer will sound after
+        the firmware timeout.
+        Time: {{ now().strftime('%Y-%m-%d %I:%M:%S %p') }}
+```
+
+### Real Wi-Fi connection restored
+
+The five-second delay allows the reconnected firmware to publish its completed
+outage duration before the message is rendered.
+
+```yaml
+alias: "Garage SEM Meter - WiFi Connection Restored"
+description: "Report recovery after the SEM Meter returns online."
+mode: single
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.sem_meter_sem_meter_online
+    to: "on"
+actions:
+  - delay: "00:00:05"
+  - action: telegram_bot.send_message
+    data:
+      config_entry_id: <telegram_config_entry_id>
+      target: <chat_id>
+      title: "✅ SEM Meter WiFi Connection Restored"
+      message: >-
+        The Garage SEM Meter is reachable again.
+        Outage duration:
+        {{ states('sensor.sem_meter_sem_last_wifi_outage_duration')
+           | float(0) | round(0) }} seconds.
+        WiFi status:
+        {{ states('text_sensor.sem_meter_sem_wifi_diagnostic_status')
+           | replace('_', ' ') }}.
+        Time: {{ now().strftime('%Y-%m-%d %I:%M:%S %p') }}
+```
+
+### Simulation-only Telegram test
+
+Because simulation deliberately keeps the node online, use `SEM WiFi Healthy`
+for optional end-to-end test messages. Do not use this sensor as the primary
+real-outage trigger.
+
+```yaml
+alias: "Garage SEM Meter - Simulated WiFi Lost"
+mode: single
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.sem_meter_sem_wifi_healthy
+    from: "on"
+    to: "off"
+actions:
+  - action: telegram_bot.send_message
+    data:
+      config_entry_id: <telegram_config_entry_id>
+      target: <chat_id>
+      title: "TEST: SEM Meter WiFi Timeout"
+      message: >-
+        The safe WiFi-timeout simulation reached its 120-second threshold.
+        The real WiFi/API connection and electrical measurements remain active.
+```
+
+```yaml
+alias: "Garage SEM Meter - Simulated WiFi Restored"
+mode: single
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.sem_meter_sem_wifi_healthy
+    from: "off"
+    to: "on"
+actions:
+  - delay: "00:00:05"
+  - action: telegram_bot.send_message
+    data:
+      config_entry_id: <telegram_config_entry_id>
+      target: <chat_id>
+      title: "TEST: SEM Meter WiFi Restored"
+      message: >-
+        The safe WiFi-timeout simulation recovered.
+        Outage duration:
+        {{ states('sensor.sem_meter_sem_last_wifi_outage_duration')
+           | float(0) | round(0) }} seconds.
+```
+
+Telegram cannot be sent by the ESP32 during a real Wi-Fi loss. If Home
+Assistant or the entire home internet connection is also down, the remote lost
+message cannot be delivered until connectivity returns. The local GPIO41
+buzzer still provides the on-site warning, and the recovery message can include
+the firmware-recorded duration.
+
 ## Troubleshooting
 
 - Enable the disabled `Buzzer Two Beeps` entity from Home Assistant's SEM Meter
@@ -217,12 +415,17 @@ from being reported as an outage recovery.
 - Wi-Fi/API availability and SEM UART/parser health are separate conditions.
   A device can remain online while meter frames have stopped, or lose Wi-Fi
   while local UART parsing continues.
+- For real Wi-Fi outage automation, use `SEM Meter Online`; for the safe
+  simulation and post-reconnection diagnosis, use `SEM WiFi Healthy`.
+- If two different alert patterns begin very close together, ESPHome's single
+  RTTTL player may preempt the earlier sound. The watchdog events remain
+  one-shot and parser/network state is unaffected.
 
 ## Future diagnostic roadmap
 
-The following items are not implemented:
+Wi-Fi lost/restored events, local sounds, diagnostics, and safe simulation are
+implemented. The following items are not implemented:
 
-- Wi-Fi lost/restored events
 - Home Assistant API lost/restored events
 - Abnormal voltage and frequency alerts
 - Missing CT data detection
