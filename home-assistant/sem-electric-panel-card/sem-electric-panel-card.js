@@ -994,6 +994,194 @@
       return results;
     }
 
+    static _isSemComponentVersion(entry, hass) {
+      const stateObject = hass?.states?.[entry.entity_id];
+      const sources = [
+        entry.original_name,
+        entry.unique_id,
+        stateObject?.attributes?.friendly_name,
+        entry.entity_id,
+      ];
+      return sources.some((source) => {
+        const normalized = this._normalizeMatchText(source);
+        return (
+          normalized.includes("component version") &&
+          (normalized.includes("sem meter") ||
+            normalized.startsWith("sem ") ||
+            normalized.includes(" sem "))
+        );
+      });
+    }
+
+    static _deviceFallbackName(entries, hass) {
+      const suffix =
+        /\s+(?:(?:total\s+)?main\s+(?:power|current)|total\s+(?:power|current)|(?:line\s*[12]|l[12]|(?:main\s+)?phase\s+[ab])\s+power|(?:clamp|ct|channel|circuit)\s+\d+\s+power|sem\s+component\s+version)$/i;
+      for (const entry of entries) {
+        const stateName =
+          hass?.states?.[entry.entity_id]?.attributes?.friendly_name;
+        const source = this._cleanText(stateName || entry.original_name);
+        if (!source) {
+          continue;
+        }
+        const trimmed = source.replace(suffix, "").trim();
+        if (trimmed && trimmed !== source) {
+          return trimmed;
+        }
+      }
+      for (const entry of entries) {
+        const fallback = this._friendlyEntityLabel(hass, entry.entity_id);
+        if (fallback) {
+          return fallback;
+        }
+      }
+      return "";
+    }
+
+    static _candidateHint(roleMatches, clampCount) {
+      const hasMain =
+        roleMatches.main_power || roleMatches.main_current;
+      const hasBothLines =
+        roleMatches.line_1_power && roleMatches.line_2_power;
+      if (hasMain && hasBothLines && clampCount > 0) {
+        return `Main + L1/L2 + ${clampCount} clamp${
+          clampCount === 1 ? "" : "s"
+        }`;
+      }
+      if (clampCount > 0) {
+        return `${clampCount} clamp${
+          clampCount === 1 ? "" : "s"
+        } detected`;
+      }
+      const details = [];
+      if (hasMain) {
+        details.push("Main");
+      }
+      if (roleMatches.line_1_power) {
+        details.push("L1");
+      }
+      if (roleMatches.line_2_power) {
+        details.push("L2");
+      }
+      return details.join(" + ") || "SEM Meter metadata";
+    }
+
+    static _discoverSemMeterCandidates(
+      deviceRegistry,
+      entityRegistry,
+      hass
+    ) {
+      const devices = new Map();
+      for (const device of Array.isArray(deviceRegistry)
+        ? deviceRegistry
+        : []) {
+        if (device?.id && !devices.has(device.id)) {
+          devices.set(device.id, device);
+        }
+      }
+
+      const entitiesByDevice = new Map();
+      for (const entry of Array.isArray(entityRegistry)
+        ? entityRegistry
+        : []) {
+        if (!entry?.device_id || !devices.has(entry.device_id)) {
+          continue;
+        }
+        if (!entitiesByDevice.has(entry.device_id)) {
+          entitiesByDevice.set(entry.device_id, []);
+        }
+        entitiesByDevice.get(entry.device_id).push(entry);
+      }
+
+      const roles = this._importRoles();
+      const candidates = [];
+      for (const [deviceId, device] of devices) {
+        const allEntries = entitiesByDevice.get(deviceId) || [];
+        const sensorEntries = allEntries.filter(
+          (entry) =>
+            typeof entry.entity_id === "string" &&
+            entry.entity_id.startsWith("sensor.")
+        );
+        const roleMatches = {};
+        for (const role of roles) {
+          const candidateRole = role.clamp
+            ? {
+                ...role,
+                patterns: [
+                  `clamp ${role.clamp} power`,
+                  `ct ${role.clamp} power`,
+                  `channel ${role.clamp} power`,
+                ],
+              }
+            : role;
+          roleMatches[role.key] = sensorEntries.some(
+            (entry) =>
+              this._scoreRegistryEntry(entry, hass, candidateRole) > 0
+          );
+        }
+
+        let score = 0;
+        if (roleMatches.main_power) {
+          score += 4;
+        }
+        if (roleMatches.main_current) {
+          score += 3;
+        }
+        if (roleMatches.line_1_power) {
+          score += 2;
+        }
+        if (roleMatches.line_2_power) {
+          score += 2;
+        }
+        let clampCount = 0;
+        for (let clamp = 1; clamp <= MAX_CLAMPS; clamp += 1) {
+          if (roleMatches[`clamp_${clamp}`]) {
+            clampCount += 1;
+            score += 1;
+          }
+        }
+        const hasComponentVersion = allEntries.some((entry) =>
+          this._isSemComponentVersion(entry, hass)
+        );
+        if (hasComponentVersion) {
+          score += 3;
+        }
+        const hardwareIdentity = this._normalizeMatchText(
+          `${device.manufacturer || ""} ${device.model || ""}`
+        );
+        const hasSemHardwareIdentity =
+          hardwareIdentity.includes("sem meter");
+        if (hasSemHardwareIdentity) {
+          score += 5;
+        }
+
+        if (score < 6 && clampCount < 4) {
+          continue;
+        }
+        const label =
+          this._cleanText(device.name_by_user) ||
+          this._cleanText(device.name) ||
+          this._deviceFallbackName(allEntries, hass) ||
+          deviceId;
+        candidates.push({
+          device_id: deviceId,
+          label,
+          hint: this._candidateHint(roleMatches, clampCount),
+          score,
+          clamp_count: clampCount,
+          role_matches: roleMatches,
+          component_version: hasComponentVersion,
+          hardware_identity: hasSemHardwareIdentity,
+        });
+      }
+
+      candidates.sort(
+        (left, right) =>
+          left.label.localeCompare(right.label) ||
+          left.device_id.localeCompare(right.device_id)
+      );
+      return candidates;
+    }
+
     static _importedClampName(hass, entityId, clampNumber) {
       let label = this._friendlyEntityLabel(hass, entityId).trim();
       label = label.replace(/^.*?\bSEM\s+Meter\b\s*/i, "").trim();
@@ -1435,26 +1623,177 @@
       this._replaceConfirmationPending = false;
       this._importing = false;
       this._summary = null;
+      this._registryCache = null;
+      this._registryLoadPromise = null;
+      this._deviceDiscoveryLoading = false;
+      this._deviceCandidates = [];
+      this._deviceDiscoveryAttempted = false;
+      this._deviceDiscoveryMessage = "";
+      this._deviceDiscoveryError = "";
+      this._selectedMissingReloadFor = "";
     }
 
     setConfig(config) {
       this._config = SemElectricPanelCard._copyConfig(config);
       this._render();
+      this._ensureDeviceCandidates();
     }
 
     set hass(hass) {
       this._hass = hass;
       if (!this.shadowRoot?.hasChildNodes() && this._config) {
         this._render();
+        this._ensureDeviceCandidates();
         return;
       }
       for (const form of this.shadowRoot?.querySelectorAll("ha-form") || []) {
         form.hass = hass;
       }
+      this._ensureDeviceCandidates();
+      const selected = SemElectricPanelCard._cleanText(
+        this._config?.device_id
+      );
+      if (selected && hass?.devices?.[selected]) {
+        this._selectedMissingReloadFor = "";
+      }
+      if (
+        selected &&
+        hass?.devices &&
+        !hass.devices[selected] &&
+        this._selectedMissingReloadFor !== selected &&
+        !this._registryLoadPromise
+      ) {
+        this._selectedMissingReloadFor = selected;
+        this._loadDeviceCandidates(true, false).catch(() => {});
+      }
     }
 
     get hass() {
       return this._hass;
+    }
+
+    _ensureDeviceCandidates() {
+      if (
+        !this._config ||
+        !this._hass ||
+        this._deviceDiscoveryAttempted ||
+        this._registryLoadPromise
+      ) {
+        return;
+      }
+      if (typeof this._hass.callWS !== "function") {
+        this._deviceDiscoveryAttempted = true;
+        this._deviceDiscoveryError =
+          "Automatic SEM Meter detection is not available in this Home Assistant version.";
+        this._render();
+        return;
+      }
+      this._loadDeviceCandidates(false, false).catch(() => {});
+    }
+
+    static _registryArray(response, property, description) {
+      const entries = Array.isArray(response) ? response : response?.[property];
+      if (!Array.isArray(entries)) {
+        throw new Error(`${description} returned an unsupported response`);
+      }
+      return entries;
+    }
+
+    async _loadDeviceCandidates(force = false, announce = true) {
+      if (!force && this._registryCache) {
+        return this._registryCache;
+      }
+      if (this._registryLoadPromise) {
+        return this._registryLoadPromise;
+      }
+      if (!this._hass || typeof this._hass.callWS !== "function") {
+        throw new Error(
+          "Home Assistant does not expose the required registry API"
+        );
+      }
+
+      this._deviceDiscoveryError = "";
+      this._deviceDiscoveryMessage = "Scanning Home Assistant devices…";
+      this._deviceDiscoveryLoading = true;
+      this._render();
+      const loadPromise = Promise.all([
+        this._hass.callWS({ type: "config/device_registry/list" }),
+        this._hass.callWS({ type: "config/entity_registry/list" }),
+      ])
+        .then(([deviceResponse, entityResponse]) => {
+          const devices = SemElectricPanelCardEditor._registryArray(
+            deviceResponse,
+            "devices",
+            "Device registry"
+          );
+          const entities = SemElectricPanelCardEditor._registryArray(
+            entityResponse,
+            "entities",
+            "Entity registry"
+          );
+          this._registryCache = { devices, entities };
+          this._deviceCandidates =
+            SemElectricPanelCard._discoverSemMeterCandidates(
+              devices,
+              entities,
+              this._hass
+            );
+          this._deviceDiscoveryAttempted = true;
+
+          const selected = SemElectricPanelCard._cleanText(
+            this._config?.device_id
+          );
+          this._selectedMissingReloadFor =
+            selected &&
+            ((this._hass?.devices &&
+              !this._hass.devices[selected]) ||
+              !devices.some((device) => device?.id === selected))
+              ? selected
+              : "";
+          if (!selected && this._deviceCandidates.length === 1) {
+            const candidate = this._deviceCandidates[0];
+            this._emitConfig({
+              ...this._config,
+              device_id: candidate.device_id,
+            });
+            this._deviceDiscoveryMessage = `${candidate.label} detected`;
+          } else if (this._deviceCandidates.length === 0) {
+            this._deviceDiscoveryMessage =
+              "No SEM Meter devices were detected automatically.";
+          } else if (announce) {
+            this._deviceDiscoveryMessage = `Found ${
+              this._deviceCandidates.length
+            } SEM Meter device${
+              this._deviceCandidates.length === 1 ? "" : "s"
+            }`;
+          } else {
+            this._deviceDiscoveryMessage = "";
+          }
+          return this._registryCache;
+        })
+        .catch((error) => {
+          this._deviceDiscoveryAttempted = true;
+          this._deviceDiscoveryError = `SEM Meter device detection failed: ${
+            error instanceof Error ? error.message : String(error)
+          }. Existing device selection was preserved.`;
+          this._deviceDiscoveryMessage = "";
+          throw error;
+        })
+        .finally(() => {
+          this._registryLoadPromise = null;
+          this._deviceDiscoveryLoading = false;
+          this._render();
+        });
+      this._registryLoadPromise = loadPromise;
+      return loadPromise;
+    }
+
+    async _refreshDeviceCandidates() {
+      try {
+        await this._loadDeviceCandidates(true, true);
+      } catch (_error) {
+        // The inline error from _loadDeviceCandidates is the user-facing result.
+      }
     }
 
     _emitConfig(config) {
@@ -1548,15 +1887,10 @@
       this._updateImportControls();
       const originalConfig = this._config;
       try {
-        const response = await this._hass.callWS({
-          type: "config/entity_registry/list",
-        });
-        const registryEntries = Array.isArray(response)
-          ? response
-          : response?.entities;
-        if (!Array.isArray(registryEntries)) {
-          throw new Error("The entity registry returned an unsupported response.");
-        }
+        const registry = this._registryCache
+          ? this._registryCache
+          : await this._loadDeviceCandidates(false, false);
+        const registryEntries = registry.entities;
         const matches = SemElectricPanelCard._matchDeviceEntities(
           registryEntries,
           this._hass,
@@ -1661,6 +1995,36 @@
           font-size: 0.9rem;
           line-height: 1.4;
         }
+        .device-picker-row {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          align-items: end;
+          gap: 12px;
+        }
+        .device-message {
+          margin: 12px 0 0;
+          color: var(--secondary-text-color);
+          font-size: 0.88rem;
+          line-height: 1.4;
+        }
+        .device-message.error {
+          color: var(--error-color, #db4437);
+        }
+        details {
+          margin-top: 14px;
+          border-top: 1px solid var(--divider-color, #d5d5d5);
+          padding-top: 12px;
+        }
+        summary {
+          cursor: pointer;
+          color: var(--secondary-text-color);
+          font-size: 0.88rem;
+          font-weight: 600;
+        }
+        details ha-form {
+          display: block;
+          margin-top: 14px;
+        }
         .controls {
           display: grid;
           grid-template-columns: minmax(0, 1fr) auto;
@@ -1743,7 +2107,7 @@
           text-transform: uppercase;
         }
         @media (max-width: 520px) {
-          .controls {
+          .controls, .device-picker-row {
             grid-template-columns: 1fr;
           }
         }
@@ -1756,23 +2120,107 @@
       const explanation = document.createElement("p");
       explanation.className = "explanation";
       explanation.textContent =
-        "Select the Home Assistant device that owns the SEM Meter sensors, then import its Main and Clamp entity assignments.";
+        "Choose a detected SEM Meter, then explicitly import its Main and Clamp entity assignments.";
       deviceSection.append(heading, explanation);
+
+      const selectedDevice = SemElectricPanelCard._cleanText(
+        this._config.device_id
+      );
+      const candidateIds = new Set(
+        this._deviceCandidates.map((candidate) => candidate.device_id)
+      );
+      const devicePickerRow = document.createElement("div");
+      devicePickerRow.className = "device-picker-row";
+      const candidateLabel = document.createElement("label");
+      candidateLabel.textContent = "Detected SEM Meter device";
+      const candidateSelect = document.createElement("select");
+      candidateSelect.dataset.candidateDevice = "";
+      candidateSelect.setAttribute(
+        "aria-label",
+        "Detected SEM Meter device"
+      );
+      candidateSelect.disabled = this._deviceDiscoveryLoading;
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = this._deviceDiscoveryLoading
+        ? "Scanning devices…"
+        : this._deviceCandidates.length > 0
+        ? "Select a detected SEM Meter"
+        : "No detected SEM Meter devices";
+      placeholder.selected = !candidateIds.has(selectedDevice);
+      candidateSelect.append(placeholder);
+      for (const candidate of this._deviceCandidates) {
+        const option = document.createElement("option");
+        option.value = candidate.device_id;
+        option.textContent = `${candidate.label} — ${candidate.hint}`;
+        option.selected = candidate.device_id === selectedDevice;
+        candidateSelect.append(option);
+      }
+      candidateSelect.addEventListener("change", () => {
+        const deviceId = SemElectricPanelCard._cleanText(
+          candidateSelect.value
+        );
+        if (!deviceId) {
+          return;
+        }
+        this._summary = null;
+        this._replaceConfirmationPending = false;
+        this._emitConfig({ ...this._config, device_id: deviceId });
+        const candidate = this._deviceCandidates.find(
+          (item) => item.device_id === deviceId
+        );
+        this._deviceDiscoveryMessage = candidate
+          ? `${candidate.label} selected`
+          : "";
+        this._render();
+      });
+      candidateLabel.append(candidateSelect);
+
+      const refreshButton = document.createElement("button");
+      refreshButton.type = "button";
+      refreshButton.dataset.refreshDevices = "";
+      refreshButton.textContent = "Refresh SEM Meter Devices";
+      refreshButton.disabled = this._deviceDiscoveryLoading;
+      refreshButton.addEventListener("click", () =>
+        this._refreshDeviceCandidates()
+      );
+      devicePickerRow.append(candidateLabel, refreshButton);
+      deviceSection.append(devicePickerRow);
+
+      if (this._deviceDiscoveryError || this._deviceDiscoveryMessage) {
+        const message = document.createElement("p");
+        message.className = `device-message${
+          this._deviceDiscoveryError ? " error" : ""
+        }`;
+        message.setAttribute(
+          "role",
+          this._deviceDiscoveryError ? "alert" : "status"
+        );
+        message.textContent =
+          this._deviceDiscoveryError || this._deviceDiscoveryMessage;
+        deviceSection.append(message);
+      }
 
       const deviceFormSchema = {
         schema: [{ name: "device_id", selector: { device: {} } }],
-        computeLabel: () => "Home Assistant device",
+        computeLabel: () => "Any Home Assistant device",
         computeHelper: () =>
-          "The normal card never requires registry access; this selection is used only by the editor import.",
+          "Use this only when automatic SEM Meter detection cannot identify the device.",
       };
-      deviceSection.append(this._createForm(deviceFormSchema));
-      if (!this._hass || typeof this._hass.callWS !== "function") {
-        const compatibility = document.createElement("p");
-        compatibility.className = "compatibility";
-        compatibility.textContent =
-          "Automatic registry import is not available in this Home Assistant version. Manual entity selection remains available.";
-        deviceSection.append(compatibility);
-      }
+      const advanced = document.createElement("details");
+      advanced.open =
+        (this._deviceDiscoveryAttempted &&
+          this._deviceCandidates.length === 0) ||
+        Boolean(this._deviceDiscoveryError) ||
+        Boolean(selectedDevice && !candidateIds.has(selectedDevice));
+      const advancedSummary = document.createElement("summary");
+      advancedSummary.textContent =
+        "Advanced: Select Any Home Assistant Device";
+      advanced.append(
+        advancedSummary,
+        this._createForm(deviceFormSchema)
+      );
+      deviceSection.append(advanced);
 
       const controls = document.createElement("div");
       controls.className = "controls";

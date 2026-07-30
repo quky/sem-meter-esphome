@@ -52,8 +52,8 @@ After registering the resource:
 1. Edit a dashboard.
 2. Select **Add card**.
 3. Find **SEM Electric Panel** in the card picker.
-4. In **SEM Meter Device**, select the Home Assistant device that owns the
-   ESPHome SEM Meter entities.
+4. In **SEM Meter Device**, select one of the automatically detected SEM Meter
+   candidates.
 5. Choose an import mode and select **Import SEM Meter Entities**, or configure
    the entities manually.
 6. Configure the General and Main Breaker sections.
@@ -76,9 +76,31 @@ The runtime also accepts the concise YAML list shown below and in
 ## Import entities from a SEM Meter device
 
 Device import is optional and editor-only. The rendered card never queries the
-entity registry. The importer asks Home Assistant for sensor entities that
-belong to the selected `device_id`, then matches Main power, Main current, Line
-1, Line 2, and Clamp 1 through Clamp 16 using registry and state metadata.
+registries. When the editor opens, it loads the Home Assistant device and
+entity registries once and filters the primary device list to likely SEM Meter
+devices. Detection scores recognizable Main, Line, and Clamp/CT/Channel power
+entities, SEM component-version metadata, and device manufacturer/model
+metadata. Unrelated Home Assistant devices do not appear in the primary list.
+
+If exactly one SEM Meter is detected and `device_id` is empty, the editor
+preselects that device and displays a detection message. Preselection never
+imports or changes Main or Clamp entity assignments. The user must still
+explicitly run **Fill Empty Fields** or **Replace Entity Assignments**.
+
+Use **Refresh SEM Meter Devices** to reload both registries and rescan after
+adding, renaming, or moving entities. The current `device_id` is preserved
+when its device still exists. Registry data is otherwise cached for the
+lifetime of that editor instance and is not reloaded for routine Home
+Assistant state updates.
+
+If no candidate is detected—or registry loading fails—expand **Advanced:
+Select Any Home Assistant Device** to use Home Assistant's unrestricted device
+selector. The Advanced selector is also available, collapsed by default, for
+unusual entity naming and customized devices.
+
+After a device is selected, the importer considers only entities that belong
+to its `device_id`, then matches Main power, Main current, Line 1, Line 2, and
+Clamp 1 through Clamp 16 using registry and state metadata.
 
 The importer recognizes common forms such as `Main Power`, `Total Power`,
 `Line 1 Power`, `L1 Power`, `Clamp 7 Power`, `CT 7 Power`, `Channel 7 Power`,
@@ -246,6 +268,20 @@ Double-pole rows include a 2-pole tooltip and accessible label.
 - If the editor reports registry incompatibility or a request failure, use the
   existing manual entity selectors. No current assignments are changed by a
   failed request.
+
+### SEM Meter does not appear in the filtered device list
+
+- Select **Refresh SEM Meter Devices** after adding or renaming entities.
+- Confirm the sensors belong to the same Home Assistant device in **Settings →
+  Devices & services → Devices**.
+- Candidate detection looks for a combination of Main/Total power or current,
+  Line 1/L1, Line 2/L2, Clamp/CT/Channel power entities, SEM component-version
+  metadata, or `SEM Meter` manufacturer/model metadata.
+- A device qualifies with a score of at least 6 or at least four distinct
+  Clamp/CT/Channel matches.
+- Expand **Advanced: Select Any Home Assistant Device** when customized names
+  prevent automatic detection. Import and all manual entity selectors remain
+  available.
 
 ## Version 1 limitations
 
