@@ -11,6 +11,7 @@
 #include "esphome/core/helpers.h"
 #include "sem_meter_accumulator.h"
 #include "sem_meter_foundation.h"
+#include "sem_meter_report.h"
 #include "sem_meter_validator.h"
 
 namespace esphome::sem_meter {
@@ -144,6 +145,18 @@ class SEMMeterComponent final : public Component,
   void set_sem_self_test_failure_count_sensor(sensor::Sensor *sensor) {
     this->sem_self_test_failure_count_sensor_ = sensor;
   }
+  void set_sem_diagnostic_report_part_1_text_sensor(
+      text_sensor::TextSensor *sensor) {
+    this->sem_diagnostic_report_part_text_sensors_[0] = sensor;
+  }
+  void set_sem_diagnostic_report_part_2_text_sensor(
+      text_sensor::TextSensor *sensor) {
+    this->sem_diagnostic_report_part_text_sensors_[1] = sensor;
+  }
+  void set_sem_diagnostic_report_part_3_text_sensor(
+      text_sensor::TextSensor *sensor) {
+    this->sem_diagnostic_report_part_text_sensors_[2] = sensor;
+  }
 
   float get_branch_power(size_t index) const { return this->accumulator_.parser().get_branch_power(index); }
   float get_phase_a_power() const { return this->accumulator_.parser().get_phase_a_power(); }
@@ -203,6 +216,7 @@ class SEMMeterComponent final : public Component,
     this->wifi_health_.set_outage_threshold_ms(threshold_ms);
   }
   void run_self_test();
+  void generate_diagnostic_report();
   SelfTestStatus get_self_test_status() const { return this->self_test_.status(); }
   uint8_t get_self_test_failed_checks() const {
     return this->self_test_.failed_checks();
@@ -272,6 +286,7 @@ class SEMMeterComponent final : public Component,
   void publish_self_test_diagnostics_(bool publish_duration);
   SelfTestInputs collect_self_test_inputs_(uint32_t timestamp_ms) const;
   bool internal_diagnostic_state_consistent_() const;
+  DiagnosticReportSnapshot collect_diagnostic_report_snapshot_() const;
   void publish_startup_identity_();
   void publish_runtime_counters_(uint8_t changed_counters);
   const char *diagnostic_status_(ComponentEvent transition_event) const;
@@ -290,6 +305,7 @@ class SEMMeterComponent final : public Component,
   SEMMeterWiFiHealthTracker wifi_health_{};
   SEMMeterSelfTest self_test_{};
   SEMMeterRuntimeCounters runtime_counters_{};
+  SEMMeterDiagnosticReportGenerator report_generator_{};
   SEMMeterEventDispatcher event_dispatcher_{};
   SEMMeterValidator validator_{};
   SEMMeterValidator cycle_validator_{};
@@ -327,6 +343,9 @@ class SEMMeterComponent final : public Component,
   sensor::Sensor *sem_wifi_fault_count_sensor_{nullptr};
   sensor::Sensor *sem_self_test_run_count_sensor_{nullptr};
   sensor::Sensor *sem_self_test_failure_count_sensor_{nullptr};
+  std::array<text_sensor::TextSensor *, DIAGNOSTIC_REPORT_PART_COUNT>
+      sem_diagnostic_report_part_text_sensors_{};
+  SEMResetReason reset_reason_{SEMResetReason::UNKNOWN};
   uint32_t last_diagnostic_publish_ms_{0};
   uint32_t last_watchdog_evaluation_ms_{0};
   uint32_t last_wifi_watchdog_evaluation_ms_{0};

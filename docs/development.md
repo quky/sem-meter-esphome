@@ -21,6 +21,7 @@ The local `sem_meter` component separates responsibilities:
 | `sem_meter_accumulator.h` | Fixed-capacity stream accumulation and bounded frame processing |
 | `sem_meter_diagnostics.h` | Counters, timing, independent parser/Wi-Fi health state machines, outage durations, and bounded event dispatch |
 | `sem_meter_foundation.h` | Centralized component/hardware identity, portable reset-reason names, and runtime-only diagnostic counters |
+| `sem_meter_report.h` | Pure read-only diagnostic snapshot formatting and bounded three-part transport |
 | `sem_meter.h/.cpp` | UART integration, loop budgets, logging, and component getters |
 | `__init__.py` | ESPHome schema, UART registration, and configurable calibration |
 
@@ -59,6 +60,14 @@ accepted/completed self-test transitions, then publishes the changed counter.
 Identity and reset reason are published once during setup. The reset reason
 uses ESP-IDF's public `esp_reset_reason()` API; `ESPHOME_VERSION` comes from
 ESPHome's generated public version header.
+
+Diagnostics v4 collects existing centralized values into one immutable
+snapshot only when `Generate Diagnostic Report` is pressed. The pure report
+helper formats that snapshot once, then splits it between complete label/value
+blocks. Three 220-character text-sensor states avoid Home Assistant's
+255-character entity-state limit. Report generation has no parser, watchdog,
+counter, self-test, Wi-Fi, measurement, persistence, reboot, or buzzer side
+effects.
 
 ## Behavioral invariants
 

@@ -51,6 +51,9 @@ CONF_SEM_PARSER_FAULT_COUNT = "sem_parser_fault_count"
 CONF_SEM_WIFI_FAULT_COUNT = "sem_wifi_fault_count"
 CONF_SEM_SELF_TEST_RUN_COUNT = "sem_self_test_run_count"
 CONF_SEM_SELF_TEST_FAILURE_COUNT = "sem_self_test_failure_count"
+CONF_SEM_DIAGNOSTIC_REPORT_PART_1 = "sem_diagnostic_report_part_1"
+CONF_SEM_DIAGNOSTIC_REPORT_PART_2 = "sem_diagnostic_report_part_2"
+CONF_SEM_DIAGNOSTIC_REPORT_PART_3 = "sem_diagnostic_report_part_3"
 CONF_PHASE_VOLTAGE_MAXIMUM_DELTA = "phase_voltage_maximum_delta"
 CONF_LINE_FREQUENCY_MAXIMUM_DELTA = "line_frequency_maximum_delta"
 CONF_CIRCUIT_POWER_MAXIMUM_DELTA = "circuit_power_maximum_delta"
@@ -227,6 +230,21 @@ CONFIG_SCHEMA = (
                 state_class=STATE_CLASS_TOTAL_INCREASING,
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             ),
+            cv.Optional(
+                CONF_SEM_DIAGNOSTIC_REPORT_PART_1
+            ): text_sensor.text_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(
+                CONF_SEM_DIAGNOSTIC_REPORT_PART_2
+            ): text_sensor.text_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(
+                CONF_SEM_DIAGNOSTIC_REPORT_PART_3
+            ): text_sensor.text_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
         }
     )
     .extend(cv.COMPONENT_SCHEMA)
@@ -400,3 +418,18 @@ async def to_code(config):
     if CONF_SEM_SELF_TEST_FAILURE_COUNT in config:
         sens = await sensor.new_sensor(config[CONF_SEM_SELF_TEST_FAILURE_COUNT])
         cg.add(var.set_sem_self_test_failure_count_sensor(sens))
+    if CONF_SEM_DIAGNOSTIC_REPORT_PART_1 in config:
+        sens = await text_sensor.new_text_sensor(
+            config[CONF_SEM_DIAGNOSTIC_REPORT_PART_1]
+        )
+        cg.add(var.set_sem_diagnostic_report_part_1_text_sensor(sens))
+    if CONF_SEM_DIAGNOSTIC_REPORT_PART_2 in config:
+        sens = await text_sensor.new_text_sensor(
+            config[CONF_SEM_DIAGNOSTIC_REPORT_PART_2]
+        )
+        cg.add(var.set_sem_diagnostic_report_part_2_text_sensor(sens))
+    if CONF_SEM_DIAGNOSTIC_REPORT_PART_3 in config:
+        sens = await text_sensor.new_text_sensor(
+            config[CONF_SEM_DIAGNOSTIC_REPORT_PART_3]
+        )
+        cg.add(var.set_sem_diagnostic_report_part_3_text_sensor(sens))

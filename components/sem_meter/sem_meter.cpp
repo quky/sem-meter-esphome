@@ -411,6 +411,34 @@ void SEMMeterComponent::run_self_test() {
   this->apply_self_test_update_(update);
 }
 
+void SEMMeterComponent::generate_diagnostic_report() {
+  if (!this->report_generator_.begin_generation()) {
+    ESP_LOGD(TAG, "Ignoring duplicate diagnostic report request");
+    return;
+  }
+
+  const DiagnosticReportSnapshot snapshot =
+      this->collect_diagnostic_report_snapshot_();
+  const std::string report =
+      SEMMeterDiagnosticReportGenerator::build_diagnostic_report(snapshot);
+  DiagnosticReportParts parts;
+  if (!SEMMeterDiagnosticReportGenerator::split_report(report, parts)) {
+    ESP_LOGW(TAG, "Diagnostic report exceeds bounded three-part transport");
+    this->report_generator_.finish_generation();
+    return;
+  }
+
+  for (size_t index = 0; index < DIAGNOSTIC_REPORT_PART_COUNT; index++) {
+    if (this->sem_diagnostic_report_part_text_sensors_[index] != nullptr) {
+      this->sem_diagnostic_report_part_text_sensors_[index]->publish_state(
+          parts.values[index]);
+    }
+  }
+  ESP_LOGI(TAG, "Diagnostic report generated");
+  ESP_LOGD(TAG, "Generated diagnostic report:\n%s", report.c_str());
+  this->report_generator_.finish_generation();
+}
+
 void SEMMeterComponent::on_partial_record(size_t offset) {
   ESP_LOGV(TAG, "Preserving partial record candidate at frame offset %zu", offset);
 }
@@ -577,6 +605,29 @@ bool SEMMeterComponent::internal_diagnostic_state_consistent_() const {
   return true;
 }
 
+DiagnosticReportSnapshot
+SEMMeterComponent::collect_diagnostic_report_snapshot_() const {
+  return {
+      SEM_METER_COMPONENT_VERSION,
+      ESPHOME_VERSION,
+      SEM_METER_HARDWARE_PROFILE,
+      SEM_METER_BOARD_VARIANT,
+      sem_reset_reason_to_string(this->reset_reason_),
+      true,
+      this->health_.sem_meter_healthy(),
+      true,
+      this->wifi_health_.healthy(),
+      true,
+      api_is_connected(),
+      this->self_test_.status(),
+      this->runtime_counters_.values(),
+      this->health_.has_completed_outage(),
+      this->health_.last_completed_outage_duration_ms(),
+      this->wifi_health_.has_completed_outage(),
+      this->wifi_health_.last_completed_outage_duration_ms(),
+  };
+}
+
 void SEMMeterComponent::publish_startup_identity_() {
   if (this->sem_component_version_text_sensor_ != nullptr) {
     this->sem_component_version_text_sensor_->publish_state(
@@ -595,13 +646,13 @@ void SEMMeterComponent::publish_startup_identity_() {
   }
 
   const esp_reset_reason_t raw_reason = esp_reset_reason();
-  const SEMResetReason reset_reason = map_reset_reason(raw_reason);
+  this->reset_reason_ = map_reset_reason(raw_reason);
   ESP_LOGI(TAG, "ESP32 reset reason: %s (%d)",
-           sem_reset_reason_to_string(reset_reason),
+           sem_reset_reason_to_string(this->reset_reason_),
            static_cast<int>(raw_reason));
   if (this->sem_last_reset_reason_text_sensor_ != nullptr) {
     this->sem_last_reset_reason_text_sensor_->publish_state(
-        sem_reset_reason_to_string(reset_reason));
+        sem_reset_reason_to_string(this->reset_reason_));
   }
 }
 

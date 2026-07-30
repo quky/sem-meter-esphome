@@ -13,6 +13,7 @@
 
 #include "sem_meter_accumulator.h"
 #include "sem_meter_foundation.h"
+#include "sem_meter_report.h"
 #include "sem_meter_validator.h"
 
 namespace {
@@ -24,6 +25,12 @@ using esphome::sem_meter::DEFAULT_STARTUP_GRACE_PERIOD_MS;
 using esphome::sem_meter::DEFAULT_UART_TIMEOUT_MS;
 using esphome::sem_meter::DEFAULT_WIFI_OUTAGE_THRESHOLD_MS;
 using esphome::sem_meter::DEFAULT_WIFI_STARTUP_GRACE_PERIOD_MS;
+using esphome::sem_meter::DIAGNOSTIC_REPORT_FORMAT_VERSION;
+using esphome::sem_meter::DIAGNOSTIC_REPORT_PART_COUNT;
+using esphome::sem_meter::DIAGNOSTIC_REPORT_PART_MAX_LENGTH;
+using esphome::sem_meter::DIAGNOSTIC_REPORT_UNUSED_PART;
+using esphome::sem_meter::DiagnosticReportParts;
+using esphome::sem_meter::DiagnosticReportSnapshot;
 using esphome::sem_meter::MARKER_PRIMARY;
 using esphome::sem_meter::MARKER_SECONDARY;
 using esphome::sem_meter::MARKER_LIVE_SECONDARY;
@@ -37,6 +44,7 @@ using esphome::sem_meter::RECORD_SEQUENCE_SIZE;
 using esphome::sem_meter::SEMMeterAccumulatorObserver;
 using esphome::sem_meter::SEMMeterDiagnosticCounters;
 using esphome::sem_meter::SEMMeterDiagnostics;
+using esphome::sem_meter::SEMMeterDiagnosticReportGenerator;
 using esphome::sem_meter::SEMMeterFeedResult;
 using esphome::sem_meter::SEMMeterFrameAccumulator;
 using esphome::sem_meter::SEMMeterEventDispatcher;
@@ -810,6 +818,16 @@ void test_yaml_entity_names() {
                   yaml.find("name: \"SEM Self-Test Run Count\"") != std::string::npos &&
                   yaml.find("name: \"SEM Self-Test Failure Count\"") != std::string::npos,
               "Diagnostics v3 runtime counter entities are missing");
+  expect_true(
+      yaml.find("name: \"Generate Diagnostic Report\"") != std::string::npos &&
+          yaml.find("id: generate_diagnostic_report") != std::string::npos &&
+          yaml.find("name: \"SEM Diagnostic Report Part 1\"") !=
+              std::string::npos &&
+          yaml.find("name: \"SEM Diagnostic Report Part 2\"") !=
+              std::string::npos &&
+          yaml.find("name: \"SEM Diagnostic Report Part 3\"") !=
+              std::string::npos,
+      "Diagnostics v4 report button or transport entities are missing");
   std::cout << "[PASS] intentional YAML names preserve Surge Protector and A/C entity identity\n";
 }
 
@@ -1732,6 +1750,203 @@ void test_runtime_self_test_counters_and_rollover() {
   std::cout << "[PASS] self-test counters reject duplicates and wrap explicitly at uint32 max\n";
 }
 
+DiagnosticReportSnapshot healthy_report_snapshot() {
+  DiagnosticReportSnapshot snapshot;
+  snapshot.component_version = SEM_METER_COMPONENT_VERSION;
+  snapshot.esphome_version = "2026.7.0";
+  snapshot.hardware_profile = SEM_METER_HARDWARE_PROFILE;
+  snapshot.board_variant = SEM_METER_BOARD_VARIANT;
+  snapshot.reset_reason = "POWER_ON";
+  snapshot.parser_health_known = true;
+  snapshot.parser_healthy = true;
+  snapshot.wifi_health_known = true;
+  snapshot.wifi_healthy = true;
+  snapshot.home_assistant_state_known = true;
+  snapshot.home_assistant_online = true;
+  snapshot.self_test_status = SelfTestStatus::PASS;
+  snapshot.counters = {2, 3, 4, 1};
+  snapshot.parser_outage_known = true;
+  snapshot.parser_outage_duration_ms = 12000;
+  snapshot.wifi_outage_known = true;
+  snapshot.wifi_outage_duration_ms = 125000;
+  return snapshot;
+}
+
+std::string reconstruct_report(const DiagnosticReportParts &parts) {
+  std::string reconstructed;
+  for (const auto &part : parts.values) {
+    if (part != DIAGNOSTIC_REPORT_UNUSED_PART) {
+      reconstructed += part;
+    }
+  }
+  return reconstructed;
+}
+
+void expect_ordered(const std::string &report,
+                    const std::vector<std::string> &tokens) {
+  size_t previous = 0;
+  for (const auto &token : tokens) {
+    const size_t found = report.find(token, previous);
+    expect_true(found != std::string::npos,
+                "diagnostic report is missing ordered token: " + token);
+    previous = found + token.size();
+  }
+}
+
+void test_diagnostic_report_states_and_format() {
+  DiagnosticReportSnapshot snapshot = healthy_report_snapshot();
+  const std::string healthy =
+      SEMMeterDiagnosticReportGenerator::build_diagnostic_report(snapshot);
+  expect_ordered(
+      healthy,
+      {"SEM Meter Diagnostic Report", "Report Format\n1",
+       "Component Version\n4.0.0-dev", "ESPHome Version\n2026.7.0",
+       "Hardware Profile\nESP32-S3 / UART RX GPIO39 / Buzzer GPIO41",
+       "Board Variant\nQUKY_GPIO41", "Reset Reason\nPOWER_ON",
+       "Parser\nHealthy", "WiFi\nHealthy", "Home Assistant\nOnline",
+       "Self-Test\nPASS", "Parser Faults\n2", "WiFi Faults\n3",
+       "Self-Test Runs\n4", "Self-Test Failures\n1",
+       "Last Parser Outage\n12 seconds",
+       "Last WiFi Outage\n125 seconds",
+       "Additional Diagnostics\nNone"});
+  expect_true(DIAGNOSTIC_REPORT_FORMAT_VERSION == 1,
+              "diagnostic report format version changed");
+
+  snapshot.parser_healthy = false;
+  expect_true(SEMMeterDiagnosticReportGenerator::build_diagnostic_report(
+                  snapshot)
+                      .find("Parser\nUnhealthy") != std::string::npos,
+              "parser-unhealthy report state is incorrect");
+  snapshot = healthy_report_snapshot();
+  snapshot.wifi_healthy = false;
+  expect_true(SEMMeterDiagnosticReportGenerator::build_diagnostic_report(
+                  snapshot)
+                      .find("WiFi\nUnhealthy") != std::string::npos,
+              "WiFi-unhealthy report state is incorrect");
+  snapshot = healthy_report_snapshot();
+  snapshot.home_assistant_online = false;
+  expect_true(SEMMeterDiagnosticReportGenerator::build_diagnostic_report(
+                  snapshot)
+                      .find("Home Assistant\nOffline") != std::string::npos,
+              "Home Assistant offline report state is incorrect");
+  snapshot.self_test_status = SelfTestStatus::FAIL;
+  expect_true(SEMMeterDiagnosticReportGenerator::build_diagnostic_report(
+                  snapshot)
+                      .find("Self-Test\nFAIL") != std::string::npos,
+              "self-test FAIL report state is incorrect");
+  snapshot.self_test_status = SelfTestStatus::NOT_RUN;
+  expect_true(SEMMeterDiagnosticReportGenerator::build_diagnostic_report(
+                  snapshot)
+                      .find("Self-Test\nNOT_RUN") != std::string::npos,
+              "self-test NOT_RUN report state is incorrect");
+  std::cout << "[PASS] diagnostic reports cover healthy, unhealthy, offline, PASS, FAIL, and NOT_RUN states\n";
+}
+
+void test_diagnostic_report_unknowns_and_side_effects() {
+  DiagnosticReportSnapshot snapshot = healthy_report_snapshot();
+  snapshot.component_version = nullptr;
+  snapshot.esphome_version = "";
+  snapshot.hardware_profile = nullptr;
+  snapshot.board_variant = "";
+  snapshot.reset_reason = nullptr;
+  snapshot.parser_health_known = false;
+  snapshot.wifi_health_known = false;
+  snapshot.home_assistant_state_known = false;
+  snapshot.self_test_status = SelfTestStatus::RUNNING;
+  snapshot.parser_outage_known = false;
+  snapshot.wifi_outage_known = false;
+  const DiagnosticReportSnapshot before = snapshot;
+
+  const std::string report =
+      SEMMeterDiagnosticReportGenerator::build_diagnostic_report(snapshot);
+  expect_true(std::count(report.begin(), report.end(), '\n') > 0,
+              "UNKNOWN report was empty");
+  expect_true(report.find("Component Version\nUNKNOWN") != std::string::npos &&
+                  report.find("Parser\nUNKNOWN") != std::string::npos &&
+                  report.find("WiFi\nUNKNOWN") != std::string::npos &&
+                  report.find("Home Assistant\nUNKNOWN") !=
+                      std::string::npos &&
+                  report.find("Self-Test\nUNKNOWN") != std::string::npos &&
+                  report.find("Last Parser Outage\nUNKNOWN") !=
+                      std::string::npos &&
+                  report.find("Last WiFi Outage\nUNKNOWN") !=
+                      std::string::npos,
+              "unavailable report values did not render as UNKNOWN");
+  expect_true(snapshot.component_version == before.component_version &&
+                  snapshot.parser_health_known ==
+                      before.parser_health_known &&
+                  snapshot.counters.parser_fault_count ==
+                      before.counters.parser_fault_count &&
+                  snapshot.parser_outage_duration_ms ==
+                      before.parser_outage_duration_ms,
+              "read-only report generation modified its diagnostic snapshot");
+  std::cout << "[PASS] unavailable report values are UNKNOWN and generation has no side effects\n";
+}
+
+void test_diagnostic_report_transport_and_duplicate_guard() {
+  SEMMeterDiagnosticReportGenerator generator;
+  expect_true(generator.begin_generation(),
+              "first diagnostic report request was rejected");
+  expect_true(!generator.begin_generation() && generator.generating(),
+              "duplicate diagnostic report request was not ignored");
+  generator.finish_generation();
+  expect_true(generator.begin_generation(),
+              "report generator did not accept a later request");
+  generator.finish_generation();
+
+  const std::string report =
+      SEMMeterDiagnosticReportGenerator::build_diagnostic_report(
+          healthy_report_snapshot());
+  DiagnosticReportParts parts;
+  expect_true(SEMMeterDiagnosticReportGenerator::split_report(report, parts),
+              "complete report did not fit the bounded transport");
+  expect_true(parts.used_parts == DIAGNOSTIC_REPORT_PART_COUNT,
+              "complete report did not use the expected three parts");
+  for (const auto &part : parts.values) {
+    expect_true(part.size() <= DIAGNOSTIC_REPORT_PART_MAX_LENGTH,
+                "a diagnostic report part exceeded 220 characters");
+    if (part != DIAGNOSTIC_REPORT_UNUSED_PART && &part != &parts.values.back()) {
+      expect_true(part.size() >= 2 &&
+                      part.substr(part.size() - 2) == "\n\n",
+                  "report split did not occur at a blank-line boundary");
+    }
+  }
+  expect_true(reconstruct_report(parts) == report,
+              "concatenated report parts did not reconstruct the report");
+
+  const std::vector<std::string> labels{
+      "Report Format",          "Component Version",
+      "ESPHome Version",        "Hardware Profile",
+      "Board Variant",          "Reset Reason",
+      "Parser",                 "WiFi",
+      "Home Assistant",         "Self-Test",
+      "Parser Faults",          "WiFi Faults",
+      "Self-Test Runs",         "Self-Test Failures",
+      "Last Parser Outage",     "Last WiFi Outage",
+      "Additional Diagnostics"};
+  for (const auto &label : labels) {
+    for (const auto &part : parts.values) {
+      if (part == label || (part.size() > label.size() &&
+                            part.compare(part.size() - label.size(),
+                                         label.size(), label) == 0)) {
+        throw std::runtime_error("report split separated label from value: " +
+                                 label);
+      }
+    }
+  }
+
+  DiagnosticReportParts reused = parts;
+  expect_true(SEMMeterDiagnosticReportGenerator::split_report(
+                  "Short Report\nOK", reused),
+              "short report could not be split");
+  expect_true(reused.used_parts == 1 &&
+                  reused.values[0] == "Short Report\nOK" &&
+                  reused.values[1] == DIAGNOSTIC_REPORT_UNUSED_PART &&
+                  reused.values[2] == DIAGNOSTIC_REPORT_UNUSED_PART,
+              "short report left stale text in unused transport parts");
+  std::cout << "[PASS] report transport is bounded, newline-safe, exact, stale-free, and duplicate-protected\n";
+}
+
 void test_foundation_identity_and_reset_reason_mapping() {
   expect_true(!std::string(SEM_METER_COMPONENT_VERSION).empty() &&
                   std::string(SEM_METER_COMPONENT_VERSION).find(' ') ==
@@ -1914,6 +2129,9 @@ int main(int argc, char **argv) {
     test_self_test_api_internal_and_rollover();
     test_runtime_counter_watchdog_transitions();
     test_runtime_self_test_counters_and_rollover();
+    test_diagnostic_report_states_and_format();
+    test_diagnostic_report_unknowns_and_side_effects();
+    test_diagnostic_report_transport_and_duplicate_guard();
     test_foundation_identity_and_reset_reason_mapping();
     test_wrap_safe_uart_timeout();
     test_non_recursive_event_dispatch();

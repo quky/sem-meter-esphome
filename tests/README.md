@@ -74,3 +74,9 @@ The executable uses only the C++ standard library. Its replay coverage includes:
 - Runtime parser/Wi-Fi counters across real, simulated, recovered, and repeated outages
 - Runtime self-test run/failure counters and duplicate-start protection
 - Explicit runtime-counter rollover from `UINT32_MAX` to zero
+- Diagnostics v4 healthy, unhealthy, offline, PASS, FAIL, NOT_RUN, and UNKNOWN reports
+- Stable report format version and field ordering
+- Read-only report generation and duplicate-request protection
+- Three-part transport capped at 220 characters per Home Assistant state
+- Newline-only splitting with intact label/value blocks
+- Exact reconstruction and `NONE` replacement for unused or stale parts

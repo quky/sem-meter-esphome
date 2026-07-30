@@ -7,7 +7,7 @@
 
 namespace esphome::sem_meter {
 
-inline constexpr char SEM_METER_COMPONENT_VERSION[] = "3.0.0-dev";
+inline constexpr char SEM_METER_COMPONENT_VERSION[] = "4.0.0-dev";
 inline constexpr char SEM_METER_HARDWARE_PROFILE[] =
     "ESP32-S3 / UART RX GPIO39 / Buzzer GPIO41";
 inline constexpr char SEM_METER_BOARD_VARIANT[] = "QUKY_GPIO41";

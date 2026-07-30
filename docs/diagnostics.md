@@ -121,6 +121,10 @@ Meter** before using the examples below.
 | SEM WiFi Fault Count | `sensor.sem_meter_sem_wifi_fault_count` | Sensor | — | Declared Wi-Fi outages this boot | Runtime total |
 | SEM Self-Test Run Count | `sensor.sem_meter_sem_self_test_run_count` | Sensor | — | Accepted self-tests this boot | Runtime total |
 | SEM Self-Test Failure Count | `sensor.sem_meter_sem_self_test_failure_count` | Sensor | — | Failed self-tests this boot | Runtime total |
+| Generate Diagnostic Report | `button.sem_meter_generate_diagnostic_report` | Button | — | Captures one read-only component-generated report | — |
+| SEM Diagnostic Report Part 1 | `text_sensor.sem_meter_sem_diagnostic_report_part_1` | Text sensor | — | First bounded report transport part | Last generated part or unavailable |
+| SEM Diagnostic Report Part 2 | `text_sensor.sem_meter_sem_diagnostic_report_part_2` | Text sensor | — | Second bounded report transport part | Last generated part or unavailable |
+| SEM Diagnostic Report Part 3 | `text_sensor.sem_meter_sem_diagnostic_report_part_3` | Text sensor | — | Third bounded report transport part | Last generated part or unavailable |
 | Last Event | `text_sensor.sem_meter_last_event` | Text sensor | — | Latest internal reliability event | Usually `UART_STARTED` or another recent event |
 | WiFi Signal | `sensor.sem_meter_wifi_signal` | Sensor | dBm | Device Wi-Fi signal, independent of SEM UART health | Site dependent |
 
@@ -540,10 +544,144 @@ entities:
   - binary_sensor.sem_meter_sem_meter_online
 ```
 
+## Diagnostics v4 diagnostic report
+
+Press `Generate Diagnostic Report` to capture one coherent diagnostic snapshot.
+The component owns snapshot collection and formatting. Generation is read-only:
+it does not run the self-test, reset a watchdog, modify a counter, acknowledge
+an alarm, change parser or Wi-Fi state, publish an electrical measurement,
+reboot, or write preferences/flash. A duplicate press received while generation
+is already active is ignored.
+
+Home Assistant entity states have a 255-character limit, while the complete
+report is longer. The completed report is therefore transported through `SEM
+Diagnostic Report Part 1`, `Part 2`, and `Part 3`. Each state is intentionally
+limited to 220 characters. Splits occur only between complete label/value
+blocks. All parts come from the same snapshot and every request replaces all
+three states; an unused part is published as `NONE`.
+
+The stable report format is:
+
+```text
+==================================
+SEM Meter Diagnostic Report
+==================================
+
+Report Format
+1
+
+Component Version
+<value>
+
+ESPHome Version
+<value>
+
+Hardware Profile
+<value>
+
+Board Variant
+<value>
+
+Reset Reason
+<value>
+
+Parser
+Healthy / Unhealthy
+
+WiFi
+Healthy / Unhealthy
+
+Home Assistant
+Online / Offline
+
+Self-Test
+PASS / FAIL / NOT_RUN
+
+Parser Faults
+<number>
+
+WiFi Faults
+<number>
+
+Self-Test Runs
+<number>
+
+Self-Test Failures
+<number>
+
+Last Parser Outage
+<number> seconds
+
+Last WiFi Outage
+<number> seconds
+
+Additional Diagnostics
+None
+
+==================================
+```
+
+Unavailable values are `UNKNOWN`; fields are never blank. Firmware
+intentionally omits a timestamp. Home Assistant records state-change times and
+can add a delivery timestamp.
+
+If any diagnostic entity is disabled in Home Assistant, open **Settings →
+Devices & services → ESPHome → SEM Meter**, select the entity, open its
+settings, and enable it. The three report parts and generation button are
+enabled by default in this configuration.
+
+### Optional Telegram report automation
+
+Firmware never contacts Telegram. Home Assistant owns delivery and only
+concatenates the three component-generated parts; it does not reconstruct the
+report from separate live diagnostic entities. Replace the example entity IDs,
+config-entry ID, and target with values from your installation. The `NONE`
+filter omits unused transport parts.
+
+```yaml
+alias: "Garage SEM Meter - Send Diagnostic Report"
+description: "Forward a newly generated component diagnostic report."
+mode: single
+triggers:
+  - trigger: state
+    entity_id: text_sensor.garage_sem_meter_sem_diagnostic_report_part_3
+conditions: []
+actions:
+  - action: telegram_bot.send_message
+    data:
+      config_entry_id: <telegram_config_entry_id>
+      target: <chat_id>
+      message: >-
+        {% set parts = [
+          states('text_sensor.garage_sem_meter_sem_diagnostic_report_part_1'),
+          states('text_sensor.garage_sem_meter_sem_diagnostic_report_part_2'),
+          states('text_sensor.garage_sem_meter_sem_diagnostic_report_part_3')
+        ] | reject('equalto', 'NONE') | list %}
+        {{ parts | join('') }}
+```
+
+### Dashboard example
+
+```yaml
+type: vertical-stack
+cards:
+  - type: button
+    entity: button.garage_sem_meter_generate_diagnostic_report
+    name: Generate Diagnostic Report
+  - type: markdown
+    content: >-
+      {% set parts = [
+        states('text_sensor.garage_sem_meter_sem_diagnostic_report_part_1'),
+        states('text_sensor.garage_sem_meter_sem_diagnostic_report_part_2'),
+        states('text_sensor.garage_sem_meter_sem_diagnostic_report_part_3')
+      ] | reject('equalto', 'NONE') | list %}
+      <pre>{{ parts | join('') }}</pre>
+```
+
 ## Diagnostics v3 Foundation
 
-Diagnostics v3 adds stable identity and runtime evidence for future support
-reports. It does not generate a final diagnostic report yet.
+Diagnostics v3 provides the stable identity and runtime evidence consumed by
+the Diagnostics v4 report generator.
 
 ### Version and hardware identity
 
@@ -622,8 +760,7 @@ distinct events.
 
 Startup publication itself cannot produce a buzzer sound or a fault count.
 Parser and Wi-Fi grace periods continue to suppress timeout events until their
-existing thresholds expire. Persistent counters and the final
-“Generate Diagnostic Report” feature remain future milestones.
+existing thresholds expire. Persistent counters remain a future milestone.
 
 ## Troubleshooting
 
@@ -672,4 +809,3 @@ are implemented. The following items are not implemented:
 - Quiet hours
 - Telegram escalation
 - Persistent diagnostic counters across reboot
-- Final diagnostic-report generator

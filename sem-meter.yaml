@@ -95,6 +95,12 @@ button:
     entity_category: diagnostic
     on_press:
       - lambda: id(sem_meter_parser).run_self_test();
+  - platform: template
+    name: "Generate Diagnostic Report"
+    id: generate_diagnostic_report
+    entity_category: diagnostic
+    on_press:
+      - lambda: id(sem_meter_parser).generate_diagnostic_report();
 
 # Onboard passive buzzer confirmed on GPIO41.
 # Requires LEDC/PWM; a static GPIO pulse does not produce a tone.
@@ -322,6 +328,18 @@ sem_meter:
   sem_self_test_failure_count:
     name: "SEM Self-Test Failure Count"
     id: sem_self_test_failure_count
+    disabled_by_default: false
+  sem_diagnostic_report_part_1:
+    name: "SEM Diagnostic Report Part 1"
+    id: sem_diagnostic_report_part_1
+    disabled_by_default: false
+  sem_diagnostic_report_part_2:
+    name: "SEM Diagnostic Report Part 2"
+    id: sem_diagnostic_report_part_2
+    disabled_by_default: false
+  sem_diagnostic_report_part_3:
+    name: "SEM Diagnostic Report Part 3"
+    id: sem_diagnostic_report_part_3
     disabled_by_default: false
   milliseconds_since_last_frame:
     name: "Milliseconds Since Last Frame"

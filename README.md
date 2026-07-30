@@ -27,6 +27,7 @@ tasks.
 - Safe Wi-Fi-timeout simulation that leaves Wi-Fi, API, UART, and measurements running
 - Manual nonblocking SEM self-test with parser, Wi-Fi, API, and consistency checks
 - Diagnostics v3 identity, reset-reason reporting, and runtime fault/test counters
+- Manual Diagnostics v4 report snapshot with Home Assistant-safe three-part transport
 - Fixed-capacity 447-byte UART frame accumulation
 - Support for `0xFF`, captured-fixture `0x3B`, and live-stream `0x3C` record markers
 - Host-side captured-frame, recovery, diagnostics, and AddressSanitizer tests
@@ -73,8 +74,15 @@ Diagnostics v3 publishes the centralized component version, generated ESPHome
 version, verified hardware profile, stable board variant, and the ESP-IDF reset
 reason once at startup. Runtime-only counters track declared parser and Wi-Fi
 outages plus accepted and failed self-tests. Counters start at zero after every
-reboot; persistence and the final diagnostic-report generator are intentionally
-reserved for later milestones.
+reboot.
+
+Diagnostics v4 adds the manual `Generate Diagnostic Report` button. The
+component takes one read-only snapshot and formats the complete report itself.
+Because Home Assistant entity states are limited to 255 characters, the report
+is transported through three text sensors, each intentionally limited to 220
+characters. Splits occur only between complete label/value blocks. Home
+Assistant only concatenates the parts for display or optional Telegram
+delivery; it does not reconstruct diagnostic values from live entities.
 
 ## Sensor value validation
 
@@ -131,6 +139,7 @@ before connecting a programmer.
 │       ├── sem_meter_diagnostics.h
 │       ├── sem_meter_foundation.h
 │       ├── sem_meter_parser.h
+│       ├── sem_meter_report.h
 │       ├── sem_meter_validator.cpp
 │       └── sem_meter_validator.h
 ├── docs/
