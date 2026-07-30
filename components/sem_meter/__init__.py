@@ -7,12 +7,14 @@ from esphome.const import (
     STATE_CLASS_MEASUREMENT,
     STATE_CLASS_TOTAL_INCREASING,
     UNIT_MILLISECOND,
+    UNIT_SECOND,
 )
 
 CONF_BRANCH_POWER_DIVISOR = "branch_power_divisor"
 CONF_MAIN_POWER_DIVISOR = "main_power_divisor"
 CONF_VOLTAGE_DIVISOR = "voltage_divisor"
 CONF_UART_TIMEOUT = "uart_timeout"
+CONF_STARTUP_GRACE_PERIOD = "startup_grace_period"
 CONF_SEM_METER_HEALTHY = "sem_meter_healthy"
 CONF_UART_HEALTHY = "uart_healthy"
 CONF_COMPONENT_STATE = "component_state"
@@ -26,6 +28,32 @@ CONF_LAST_REJECTED_SENSOR = "last_rejected_sensor"
 CONF_LAST_REJECTION_REASON = "last_rejection_reason"
 CONF_LAST_REJECTED_VALUE = "last_rejected_value"
 CONF_REJECTED_SAMPLES = "rejected_samples"
+CONF_SEM_PARSER_HEALTHY = "sem_parser_healthy"
+CONF_SEM_DIAGNOSTIC_STATUS = "sem_diagnostic_status"
+CONF_SEM_LAST_VALID_FRAME_AGE = "sem_last_valid_frame_age"
+CONF_SEM_LAST_PARSER_OUTAGE_DURATION = "sem_last_parser_outage_duration"
+CONF_WIFI_STARTUP_GRACE_PERIOD = "wifi_startup_grace_period"
+CONF_WIFI_OUTAGE_THRESHOLD = "wifi_outage_threshold"
+CONF_SEM_WIFI_HEALTHY = "sem_wifi_healthy"
+CONF_SEM_WIFI_DIAGNOSTIC_STATUS = "sem_wifi_diagnostic_status"
+CONF_SEM_LAST_WIFI_OUTAGE_DURATION = "sem_last_wifi_outage_duration"
+CONF_SEM_WIFI_DISCONNECT_AGE = "sem_wifi_disconnect_age"
+CONF_SEM_SELF_TEST_STATUS = "sem_self_test_status"
+CONF_SEM_SELF_TEST_SUMMARY = "sem_self_test_summary"
+CONF_SEM_SELF_TEST_FAILED_CHECKS = "sem_self_test_failed_checks"
+CONF_SEM_LAST_SELF_TEST_DURATION = "sem_last_self_test_duration"
+CONF_SEM_COMPONENT_VERSION = "sem_component_version"
+CONF_SEM_ESPHOME_VERSION = "sem_esphome_version"
+CONF_SEM_HARDWARE_PROFILE = "sem_hardware_profile"
+CONF_SEM_BOARD_VARIANT = "sem_board_variant"
+CONF_SEM_LAST_RESET_REASON = "sem_last_reset_reason"
+CONF_SEM_PARSER_FAULT_COUNT = "sem_parser_fault_count"
+CONF_SEM_WIFI_FAULT_COUNT = "sem_wifi_fault_count"
+CONF_SEM_SELF_TEST_RUN_COUNT = "sem_self_test_run_count"
+CONF_SEM_SELF_TEST_FAILURE_COUNT = "sem_self_test_failure_count"
+CONF_SEM_DIAGNOSTIC_REPORT_PART_1 = "sem_diagnostic_report_part_1"
+CONF_SEM_DIAGNOSTIC_REPORT_PART_2 = "sem_diagnostic_report_part_2"
+CONF_SEM_DIAGNOSTIC_REPORT_PART_3 = "sem_diagnostic_report_part_3"
 CONF_PHASE_VOLTAGE_MAXIMUM_DELTA = "phase_voltage_maximum_delta"
 CONF_LINE_FREQUENCY_MAXIMUM_DELTA = "line_frequency_maximum_delta"
 CONF_CIRCUIT_POWER_MAXIMUM_DELTA = "circuit_power_maximum_delta"
@@ -48,6 +76,15 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_MAIN_POWER_DIVISOR, default=102.0): cv.positive_float,
             cv.Optional(CONF_VOLTAGE_DIVISOR, default=10.30): cv.positive_float,
             cv.Optional(CONF_UART_TIMEOUT, default="10s"): cv.positive_time_period_milliseconds,
+            cv.Optional(
+                CONF_STARTUP_GRACE_PERIOD, default="30s"
+            ): cv.positive_time_period_milliseconds,
+            cv.Optional(
+                CONF_WIFI_STARTUP_GRACE_PERIOD, default="180s"
+            ): cv.positive_time_period_milliseconds,
+            cv.Optional(
+                CONF_WIFI_OUTAGE_THRESHOLD, default="120s"
+            ): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_PHASE_VOLTAGE_MAXIMUM_DELTA, default=40.0): cv.positive_float,
             cv.Optional(CONF_LINE_FREQUENCY_MAXIMUM_DELTA, default=10.0): cv.positive_float,
             cv.Optional(CONF_CIRCUIT_POWER_MAXIMUM_DELTA, default=20000.0): cv.positive_float,
@@ -107,6 +144,107 @@ CONFIG_SCHEMA = (
                 state_class=STATE_CLASS_TOTAL_INCREASING,
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             ),
+            cv.Optional(CONF_SEM_PARSER_HEALTHY): binary_sensor.binary_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_DIAGNOSTIC_STATUS): text_sensor.text_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_LAST_VALID_FRAME_AGE): sensor.sensor_schema(
+                unit_of_measurement=UNIT_SECOND,
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_MEASUREMENT,
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_LAST_PARSER_OUTAGE_DURATION): sensor.sensor_schema(
+                unit_of_measurement=UNIT_SECOND,
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_MEASUREMENT,
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_WIFI_HEALTHY): binary_sensor.binary_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_WIFI_DIAGNOSTIC_STATUS): text_sensor.text_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_LAST_WIFI_OUTAGE_DURATION): sensor.sensor_schema(
+                unit_of_measurement=UNIT_SECOND,
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_MEASUREMENT,
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_WIFI_DISCONNECT_AGE): sensor.sensor_schema(
+                unit_of_measurement=UNIT_SECOND,
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_MEASUREMENT,
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_SELF_TEST_STATUS): text_sensor.text_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_SELF_TEST_SUMMARY): text_sensor.text_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_SELF_TEST_FAILED_CHECKS): text_sensor.text_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_LAST_SELF_TEST_DURATION): sensor.sensor_schema(
+                unit_of_measurement=UNIT_SECOND,
+                accuracy_decimals=1,
+                state_class=STATE_CLASS_MEASUREMENT,
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_COMPONENT_VERSION): text_sensor.text_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_ESPHOME_VERSION): text_sensor.text_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_HARDWARE_PROFILE): text_sensor.text_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_BOARD_VARIANT): text_sensor.text_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_LAST_RESET_REASON): text_sensor.text_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_PARSER_FAULT_COUNT): sensor.sensor_schema(
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_TOTAL_INCREASING,
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_WIFI_FAULT_COUNT): sensor.sensor_schema(
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_TOTAL_INCREASING,
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_SELF_TEST_RUN_COUNT): sensor.sensor_schema(
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_TOTAL_INCREASING,
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SEM_SELF_TEST_FAILURE_COUNT): sensor.sensor_schema(
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_TOTAL_INCREASING,
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(
+                CONF_SEM_DIAGNOSTIC_REPORT_PART_1
+            ): text_sensor.text_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(
+                CONF_SEM_DIAGNOSTIC_REPORT_PART_2
+            ): text_sensor.text_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(
+                CONF_SEM_DIAGNOSTIC_REPORT_PART_3
+            ): text_sensor.text_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
         }
     )
     .extend(cv.COMPONENT_SCHEMA)
@@ -131,6 +269,21 @@ async def to_code(config):
     cg.add(var.set_main_power_divisor(config[CONF_MAIN_POWER_DIVISOR]))
     cg.add(var.set_voltage_divisor(config[CONF_VOLTAGE_DIVISOR]))
     cg.add(var.set_uart_timeout_ms(config[CONF_UART_TIMEOUT].total_milliseconds))
+    cg.add(
+        var.set_startup_grace_period_ms(
+            config[CONF_STARTUP_GRACE_PERIOD].total_milliseconds
+        )
+    )
+    cg.add(
+        var.set_wifi_startup_grace_period_ms(
+            config[CONF_WIFI_STARTUP_GRACE_PERIOD].total_milliseconds
+        )
+    )
+    cg.add(
+        var.set_wifi_outage_threshold_ms(
+            config[CONF_WIFI_OUTAGE_THRESHOLD].total_milliseconds
+        )
+    )
     cg.add(
         var.set_phase_voltage_maximum_delta(
             config[CONF_PHASE_VOLTAGE_MAXIMUM_DELTA]
@@ -196,3 +349,87 @@ async def to_code(config):
     if CONF_REJECTED_SAMPLES in config:
         sens = await sensor.new_sensor(config[CONF_REJECTED_SAMPLES])
         cg.add(var.set_rejected_samples_sensor(sens))
+    if CONF_SEM_PARSER_HEALTHY in config:
+        sens = await binary_sensor.new_binary_sensor(config[CONF_SEM_PARSER_HEALTHY])
+        cg.add(var.set_sem_parser_healthy_binary_sensor(sens))
+    if CONF_SEM_DIAGNOSTIC_STATUS in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_SEM_DIAGNOSTIC_STATUS])
+        cg.add(var.set_sem_diagnostic_status_text_sensor(sens))
+    if CONF_SEM_LAST_VALID_FRAME_AGE in config:
+        sens = await sensor.new_sensor(config[CONF_SEM_LAST_VALID_FRAME_AGE])
+        cg.add(var.set_sem_last_valid_frame_age_sensor(sens))
+    if CONF_SEM_LAST_PARSER_OUTAGE_DURATION in config:
+        sens = await sensor.new_sensor(
+            config[CONF_SEM_LAST_PARSER_OUTAGE_DURATION]
+        )
+        cg.add(var.set_sem_last_parser_outage_duration_sensor(sens))
+    if CONF_SEM_WIFI_HEALTHY in config:
+        sens = await binary_sensor.new_binary_sensor(config[CONF_SEM_WIFI_HEALTHY])
+        cg.add(var.set_sem_wifi_healthy_binary_sensor(sens))
+    if CONF_SEM_WIFI_DIAGNOSTIC_STATUS in config:
+        sens = await text_sensor.new_text_sensor(
+            config[CONF_SEM_WIFI_DIAGNOSTIC_STATUS]
+        )
+        cg.add(var.set_sem_wifi_diagnostic_status_text_sensor(sens))
+    if CONF_SEM_LAST_WIFI_OUTAGE_DURATION in config:
+        sens = await sensor.new_sensor(config[CONF_SEM_LAST_WIFI_OUTAGE_DURATION])
+        cg.add(var.set_sem_last_wifi_outage_duration_sensor(sens))
+    if CONF_SEM_WIFI_DISCONNECT_AGE in config:
+        sens = await sensor.new_sensor(config[CONF_SEM_WIFI_DISCONNECT_AGE])
+        cg.add(var.set_sem_wifi_disconnect_age_sensor(sens))
+    if CONF_SEM_SELF_TEST_STATUS in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_SEM_SELF_TEST_STATUS])
+        cg.add(var.set_sem_self_test_status_text_sensor(sens))
+    if CONF_SEM_SELF_TEST_SUMMARY in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_SEM_SELF_TEST_SUMMARY])
+        cg.add(var.set_sem_self_test_summary_text_sensor(sens))
+    if CONF_SEM_SELF_TEST_FAILED_CHECKS in config:
+        sens = await text_sensor.new_text_sensor(
+            config[CONF_SEM_SELF_TEST_FAILED_CHECKS]
+        )
+        cg.add(var.set_sem_self_test_failed_checks_text_sensor(sens))
+    if CONF_SEM_LAST_SELF_TEST_DURATION in config:
+        sens = await sensor.new_sensor(config[CONF_SEM_LAST_SELF_TEST_DURATION])
+        cg.add(var.set_sem_last_self_test_duration_sensor(sens))
+    if CONF_SEM_COMPONENT_VERSION in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_SEM_COMPONENT_VERSION])
+        cg.add(var.set_sem_component_version_text_sensor(sens))
+    if CONF_SEM_ESPHOME_VERSION in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_SEM_ESPHOME_VERSION])
+        cg.add(var.set_sem_esphome_version_text_sensor(sens))
+    if CONF_SEM_HARDWARE_PROFILE in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_SEM_HARDWARE_PROFILE])
+        cg.add(var.set_sem_hardware_profile_text_sensor(sens))
+    if CONF_SEM_BOARD_VARIANT in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_SEM_BOARD_VARIANT])
+        cg.add(var.set_sem_board_variant_text_sensor(sens))
+    if CONF_SEM_LAST_RESET_REASON in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_SEM_LAST_RESET_REASON])
+        cg.add(var.set_sem_last_reset_reason_text_sensor(sens))
+    if CONF_SEM_PARSER_FAULT_COUNT in config:
+        sens = await sensor.new_sensor(config[CONF_SEM_PARSER_FAULT_COUNT])
+        cg.add(var.set_sem_parser_fault_count_sensor(sens))
+    if CONF_SEM_WIFI_FAULT_COUNT in config:
+        sens = await sensor.new_sensor(config[CONF_SEM_WIFI_FAULT_COUNT])
+        cg.add(var.set_sem_wifi_fault_count_sensor(sens))
+    if CONF_SEM_SELF_TEST_RUN_COUNT in config:
+        sens = await sensor.new_sensor(config[CONF_SEM_SELF_TEST_RUN_COUNT])
+        cg.add(var.set_sem_self_test_run_count_sensor(sens))
+    if CONF_SEM_SELF_TEST_FAILURE_COUNT in config:
+        sens = await sensor.new_sensor(config[CONF_SEM_SELF_TEST_FAILURE_COUNT])
+        cg.add(var.set_sem_self_test_failure_count_sensor(sens))
+    if CONF_SEM_DIAGNOSTIC_REPORT_PART_1 in config:
+        sens = await text_sensor.new_text_sensor(
+            config[CONF_SEM_DIAGNOSTIC_REPORT_PART_1]
+        )
+        cg.add(var.set_sem_diagnostic_report_part_1_text_sensor(sens))
+    if CONF_SEM_DIAGNOSTIC_REPORT_PART_2 in config:
+        sens = await text_sensor.new_text_sensor(
+            config[CONF_SEM_DIAGNOSTIC_REPORT_PART_2]
+        )
+        cg.add(var.set_sem_diagnostic_report_part_2_text_sensor(sens))
+    if CONF_SEM_DIAGNOSTIC_REPORT_PART_3 in config:
+        sens = await text_sensor.new_text_sensor(
+            config[CONF_SEM_DIAGNOSTIC_REPORT_PART_3]
+        )
+        cg.add(var.set_sem_diagnostic_report_part_3_text_sensor(sens))

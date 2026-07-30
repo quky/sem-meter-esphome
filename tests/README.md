@@ -2,9 +2,10 @@
 
 This test replays captured SEM Meter UART data through the same pure
 fixed-buffer accumulator and record decoder used by the ESPHome component. The
-shared path includes make-room recovery, 447-byte frame scanning, and 22-byte
-overlap consumption. It does not require ESPHome, ESP-IDF, PlatformIO, or
-device hardware.
+shared path includes make-room recovery, two-pass ordered-cycle
+synchronization, transactional electrical validation, malformed-cycle
+deduplication, and 22-byte overlap consumption. It does not require ESPHome,
+ESP-IDF, PlatformIO, or device hardware.
 
 ## Captured Fixture Correction
 
@@ -49,3 +50,33 @@ The executable uses only the C++ standard library. Its replay coverage includes:
 - Line frequency
 - Idle Phase C power
 - An explicit active-to-idle power reset
+- A 30-second first-frame startup grace period
+- One-shot parser timeout and recovery transitions
+- Completed outage-duration tracking
+- No recovery event for the first valid frame during a normal boot
+- Watchdog-only timeout simulation that defaults off
+- Continued parser and electrical-output updates during simulation
+- One-shot simulated timeout, recovery, and outage-duration tracking
+- Wi-Fi connection within the 180-second startup grace without alerts
+- Never-connected Wi-Fi timeout and one-shot event behavior
+- Brief disconnection below the 120-second threshold without an outage
+- Sustained Wi-Fi timeout, recovery, completed duration, and five-second
+  `RECOVERED` state
+- Wi-Fi timeout simulation that preserves real connectivity and defaults off
+- Wrap-safe Wi-Fi outage timing across `millis()` rollover
+- Independence of the parser and Wi-Fi diagnostic state machines
+- Self-test `NOT_RUN`, `RUNNING`, `PASS`, and `FAIL` state transitions
+- Duplicate self-test start rejection and one-shot result signals
+- Parser, Wi-Fi, API, internal-state, and ordered combined failure tokens
+- Self-test duration across `millis()` rollover
+- Centralized component/hardware identity constants
+- All supported reset-reason names plus safe unknown handling
+- Runtime parser/Wi-Fi counters across real, simulated, recovered, and repeated outages
+- Runtime self-test run/failure counters and duplicate-start protection
+- Explicit runtime-counter rollover from `UINT32_MAX` to zero
+- Diagnostics v4 healthy, unhealthy, offline, PASS, FAIL, NOT_RUN, and UNKNOWN reports
+- Stable report format version and field ordering
+- Read-only report generation and duplicate-request protection
+- Three-part transport capped at 220 characters per Home Assistant state
+- Newline-only splitting with intact label/value blocks
+- Exact reconstruction and `NONE` replacement for unused or stale parts

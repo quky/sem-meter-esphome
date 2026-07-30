@@ -31,6 +31,24 @@ partial data between ESPHome loop calls. Scheduler work is strictly bounded:
 - A 22-byte overlap is retained when consuming a frame so a split record can
   be completed on a later call.
 
+The accumulator synchronizes on Circuit 1 and validates all 19 record IDs in
+order at the observed 22-byte cadence before decoding. Validation is a separate
+first pass, so marker-like bytes inside a payload cannot mutate parser state.
+An incomplete candidate is retained until enough bytes arrive; a structurally
+invalid candidate is skipped while the bounded search continues toward the
+next possible Circuit 1 record.
+
+After structural verification, all records are decoded into a temporary parser
+snapshot. The electrical validator checks that complete candidate snapshot
+transactionally. Only a fully valid candidate replaces the live parser state;
+an electrical rejection leaves every previous last-good value intact.
+
+`structural_cycle_rejections` counts each plausible Circuit 1 synchronization
+candidate that fails the ordered header checks. `malformed_frames` counts a
+damaged cycle once, suppressing additional false candidates and retained bytes
+from the same damaged span. A successfully accepted cycle ends the pending
+malformed episode.
+
 If synchronization is lost and the fixed buffer fills, the oldest bytes are
 dropped with a warning. The component does not allocate memory continuously in
 its loop.
@@ -45,17 +63,18 @@ payload pointer `r` begins at the status byte:
 
 | Record byte | Meaning |
 | --- | --- |
-| Byte 0 | Marker (`0xFF` or `0x3B`) |
+| Byte 0 | Marker (`0xFF`, `0x3B`, or `0x3C`) |
 | Byte 1 | Record ID |
 | Byte 2 / `r[0]` | Status |
 | `r[4..5]` | Voltage, big-endian `uint16_t` |
 | `r[12..15]` | Power, big-endian `uint32_t` |
 | `r[20]` | Frequency in Hz |
 
-Records may begin with either marker:
+Records may begin with any of these observed markers:
 
 - `0xFF`
-- `0x3B`
+- `0x3B` (present in the original 447-byte captured fixture)
+- `0x3C` (present throughout the live UART diagnostic capture)
 
 ## Record IDs
 

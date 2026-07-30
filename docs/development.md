@@ -19,12 +19,55 @@ The local `sem_meter` component separates responsibilities:
 | --- | --- |
 | `sem_meter_parser.h` | ESPHome-independent record validation and field decoding |
 | `sem_meter_accumulator.h` | Fixed-capacity stream accumulation and bounded frame processing |
-| `sem_meter_diagnostics.h` | Counters, timing, health state, and bounded event dispatch |
+| `sem_meter_diagnostics.h` | Counters, timing, independent parser/Wi-Fi health state machines, outage durations, and bounded event dispatch |
+| `sem_meter_foundation.h` | Centralized component/hardware identity, portable reset-reason names, and runtime-only diagnostic counters |
+| `sem_meter_report.h` | Pure read-only diagnostic snapshot formatting and bounded three-part transport |
 | `sem_meter.h/.cpp` | UART integration, loop budgets, logging, and component getters |
 | `__init__.py` | ESPHome schema, UART registration, and configurable calibration |
 
 The YAML defines entities and calls read-only component getters. Parser and
 accumulator code do not publish entities directly.
+
+The parser watchdog is updated only by a transactionally accepted measurement
+cycle. It evaluates health once per second, while YAML listens to its
+one-shot timeout and restoration events to run centralized GPIO41 buzzer
+scripts. See [the diagnostics guide](diagnostics.md) for entity semantics and
+Home Assistant notification examples.
+
+The Wi-Fi state machine is also ESPHome-independent. Official `wifi`
+`on_connect`/`on_disconnect` triggers supply the real connection state, while
+the component evaluates its wrap-safe timers approximately once per second.
+Its simulation flag masks only the state-machine input; it never disables the
+radio, API, parser, or sensor publication. Parser and Wi-Fi timeout simulations
+are separate and can be tested independently.
+
+All buzzer sequences are centralized as `mode: single` YAML scripts. If two
+different alerts arrive while RTTTL is already playing, the shared RTTTL
+player may replace the current tone sequence; neither event is queued
+unboundedly and this has no effect on UART or parser state.
+
+The self-test logic is another pure state machine in
+`sem_meter_diagnostics.h`. A manual start records `millis()`, duplicate starts
+are ignored, and normal component loops evaluate completion after two seconds.
+The final snapshot checks parser health and frame age, real Wi-Fi plus its
+watchdog and simulation state, ESPHome's official `api_is_connected()` result,
+and conservative internal invariants. Entity publication and RTTTL dispatch
+remain in the ESPHome integration/YAML layers.
+
+Diagnostics v3 counter decisions remain in the native-testable foundation
+layer. The ESPHome component forwards only one-shot watchdog events and
+accepted/completed self-test transitions, then publishes the changed counter.
+Identity and reset reason are published once during setup. The reset reason
+uses ESP-IDF's public `esp_reset_reason()` API; `ESPHOME_VERSION` comes from
+ESPHome's generated public version header.
+
+Diagnostics v4 collects existing centralized values into one immutable
+snapshot only when `Generate Diagnostic Report` is pressed. The pure report
+helper formats that snapshot once, then splits it between complete label/value
+blocks. Three 220-character text-sensor states avoid Home Assistant's
+255-character entity-state limit. Report generation has no parser, watchdog,
+counter, self-test, Wi-Fi, measurement, persistence, reboot, or buzzer side
+effects.
 
 ## Behavioral invariants
 
@@ -33,7 +76,7 @@ Do not change these without captured-data evidence and a migration plan:
 - UART RX GPIO39, 115200 baud, 8N1
 - Complete frame size of 447 bytes
 - Transport chunks of 150, 150, and 147 bytes
-- Both `0xFF` and `0x3B` record markers
+- `0xFF`, captured-fixture `0x3B`, and live-stream `0x3C` record markers
 - Existing record IDs, statuses, field offsets, and calibration divisors
 - Entity names, IDs, units, circuit mappings, and energy sensors
 - `MAX_BYTES_PER_LOOP = 128`

@@ -4,12 +4,16 @@
 #include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <iterator>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "sem_meter_accumulator.h"
+#include "sem_meter_foundation.h"
+#include "sem_meter_report.h"
 #include "sem_meter_validator.h"
 
 namespace {
@@ -17,15 +21,30 @@ namespace {
 using esphome::sem_meter::COMPLETE_FRAME_SIZE;
 using esphome::sem_meter::ComponentEvent;
 using esphome::sem_meter::ComponentState;
+using esphome::sem_meter::DEFAULT_STARTUP_GRACE_PERIOD_MS;
 using esphome::sem_meter::DEFAULT_UART_TIMEOUT_MS;
+using esphome::sem_meter::DEFAULT_WIFI_OUTAGE_THRESHOLD_MS;
+using esphome::sem_meter::DEFAULT_WIFI_STARTUP_GRACE_PERIOD_MS;
+using esphome::sem_meter::DIAGNOSTIC_REPORT_FORMAT_VERSION;
+using esphome::sem_meter::DIAGNOSTIC_REPORT_PART_COUNT;
+using esphome::sem_meter::DIAGNOSTIC_REPORT_PART_MAX_LENGTH;
+using esphome::sem_meter::DIAGNOSTIC_REPORT_UNUSED_PART;
+using esphome::sem_meter::DiagnosticReportParts;
+using esphome::sem_meter::DiagnosticReportSnapshot;
 using esphome::sem_meter::MARKER_PRIMARY;
 using esphome::sem_meter::MARKER_SECONDARY;
+using esphome::sem_meter::MARKER_LIVE_SECONDARY;
+using esphome::sem_meter::MAX_BYTES_PER_LOOP;
 using esphome::sem_meter::MAX_BUFFER_SIZE;
 using esphome::sem_meter::MeasurementId;
 using esphome::sem_meter::RECORD_OVERLAP_SIZE;
+using esphome::sem_meter::RECORD_CADENCE_SIZE;
+using esphome::sem_meter::RECORD_COUNT;
+using esphome::sem_meter::RECORD_SEQUENCE_SIZE;
 using esphome::sem_meter::SEMMeterAccumulatorObserver;
 using esphome::sem_meter::SEMMeterDiagnosticCounters;
 using esphome::sem_meter::SEMMeterDiagnostics;
+using esphome::sem_meter::SEMMeterDiagnosticReportGenerator;
 using esphome::sem_meter::SEMMeterFeedResult;
 using esphome::sem_meter::SEMMeterFrameAccumulator;
 using esphome::sem_meter::SEMMeterEventDispatcher;
@@ -33,28 +52,58 @@ using esphome::sem_meter::SEMMeterEventListener;
 using esphome::sem_meter::SEMMeterHealthUpdate;
 using esphome::sem_meter::SEMMeterHealthTracker;
 using esphome::sem_meter::SEMMeterRecordParser;
+using esphome::sem_meter::SEMMeterRuntimeCounters;
+using esphome::sem_meter::SEMMeterRuntimeCounterValues;
+using esphome::sem_meter::SEMMeterSelfTest;
 using esphome::sem_meter::SEMMeterValidator;
+using esphome::sem_meter::SEMMeterWatchdogGate;
+using esphome::sem_meter::SEMMeterWiFiHealthTracker;
 using esphome::sem_meter::STATUS_IDLE;
+using esphome::sem_meter::SELF_TEST_DURATION_MS;
+using esphome::sem_meter::SELF_TEST_FAILURE_API;
+using esphome::sem_meter::SELF_TEST_FAILURE_INTERNAL_STATE;
+using esphome::sem_meter::SELF_TEST_FAILURE_NONE;
+using esphome::sem_meter::SELF_TEST_FAILURE_PARSER;
+using esphome::sem_meter::SELF_TEST_FAILURE_WIFI;
+using esphome::sem_meter::SelfTestInputs;
+using esphome::sem_meter::SelfTestSignal;
+using esphome::sem_meter::SelfTestStatus;
+using esphome::sem_meter::SEMResetReason;
+using esphome::sem_meter::SEM_METER_BOARD_VARIANT;
+using esphome::sem_meter::SEM_METER_COMPONENT_VERSION;
+using esphome::sem_meter::SEM_METER_HARDWARE_PROFILE;
 using esphome::sem_meter::ValidationFailureReason;
+using esphome::sem_meter::WIFI_RECOVERED_STATUS_DURATION_MS;
+using esphome::sem_meter::WiFiDiagnosticState;
 using esphome::sem_meter::component_event_to_string;
 using esphome::sem_meter::component_state_to_string;
 using esphome::sem_meter::measurement_id_to_string;
 using esphome::sem_meter::measurement_unit_to_string;
 using esphome::sem_meter::sem_meter_is_healthy;
+using esphome::sem_meter::sem_reset_reason_to_string;
+using esphome::sem_meter::self_test_status_to_string;
 using esphome::sem_meter::validation_failure_reason_to_string;
+using esphome::sem_meter::wifi_diagnostic_state_to_string;
 
 class TrackingObserver final : public SEMMeterAccumulatorObserver {
  public:
-  void on_decoded_record(size_t, uint8_t marker, uint8_t, uint8_t) override {
+  void on_decoded_record(size_t, uint8_t marker, uint8_t record_id, uint8_t) override {
     if (marker == MARKER_PRIMARY) {
       this->primary_records++;
     } else if (marker == MARKER_SECONDARY) {
       this->secondary_records++;
+    } else if (marker == MARKER_LIVE_SECONDARY) {
+      this->live_secondary_records++;
+    }
+    if (record_id < this->record_counts.size()) {
+      this->record_counts[record_id]++;
     }
   }
 
   size_t primary_records{0};
   size_t secondary_records{0};
+  size_t live_secondary_records{0};
+  std::array<size_t, RECORD_COUNT> record_counts{};
 };
 
 class RecordingEventListener final : public SEMMeterEventListener {
@@ -102,6 +151,22 @@ class ReplaySession {
   }
 
   SEMMeterFeedResult feed(const std::vector<uint8_t> &bytes) { return this->feed(bytes.data(), bytes.size()); }
+
+  SEMMeterFeedResult feed_validated(const uint8_t *data, size_t size,
+                                    SEMMeterValidator &validator,
+                                    uint32_t timestamp_ms) {
+    const SEMMeterFeedResult result = this->accumulator.feed(
+        data, size, &this->observer, &this->diagnostics, &validator, timestamp_ms);
+    expect_bounded();
+    return result;
+  }
+
+  SEMMeterFeedResult feed_validated(const std::vector<uint8_t> &bytes,
+                                    SEMMeterValidator &validator,
+                                    uint32_t timestamp_ms) {
+    return this->feed_validated(bytes.data(), bytes.size(), validator,
+                                timestamp_ms);
+  }
 
   void expect_bounded() const {
     if (this->accumulator.buffered_size() > MAX_BUFFER_SIZE) {
@@ -159,6 +224,28 @@ bool dispatch_health_update(SEMMeterEventDispatcher &dispatcher, const SEMMeterH
     return false;
   }
   return dispatcher.dispatch(update.event, update.timestamp_ms);
+}
+
+size_t find_circuit_1_offset(const std::vector<uint8_t> &frame) {
+  for (size_t offset = 0; offset + RECORD_SEQUENCE_SIZE <= frame.size(); offset++) {
+    if (SEMMeterRecordParser::is_marker(frame[offset]) && frame[offset + 1] == 0x00 &&
+        SEMMeterRecordParser::is_valid_status(frame[offset + 2])) {
+      return offset;
+    }
+  }
+  throw std::runtime_error("could not locate Circuit 1 record");
+}
+
+void set_branch_raw_power(std::vector<uint8_t> &frame, size_t record_offset,
+                          uint32_t raw_power) {
+  frame[record_offset + 2] = esphome::sem_meter::STATUS_ACTIVE;
+  frame[record_offset + 14] =
+      static_cast<uint8_t>((raw_power >> 24) & 0xFF);
+  frame[record_offset + 15] =
+      static_cast<uint8_t>((raw_power >> 16) & 0xFF);
+  frame[record_offset + 16] =
+      static_cast<uint8_t>((raw_power >> 8) & 0xFF);
+  frame[record_offset + 17] = static_cast<uint8_t>(raw_power & 0xFF);
 }
 
 void verify_recovered_measurements(const ReplaySession &session, const std::string &mode) {
@@ -272,40 +359,476 @@ void test_buffer_recovery(const std::vector<uint8_t> &frame) {
   const std::vector<uint8_t> garbage(MAX_BUFFER_SIZE + 106, 0xA5);
   const SEMMeterFeedResult overflow = session.feed(garbage);
   expect_true(overflow.bytes_dropped == 106, "large input did not report the expected dropped prefix");
-  expect_true(overflow.frames_processed == 1, "large input did not process exactly one bounded window");
+  expect_true(overflow.frames_processed == 0,
+              "unstructured garbage was reported as a processed frame");
   expect_true(overflow.decoded_records == 0, "garbage unexpectedly decoded records");
 
   const SEMMeterFeedResult recovery_feed = session.feed(frame);
-  expect_true(recovery_feed.bytes_dropped > 0, "full buffer did not exercise make-room recovery");
-  session.feed(nullptr, 0);
+  expect_true(recovery_feed.bytes_dropped == 0,
+              "discarded garbage caused an unnecessary second buffer recovery");
+  expect_true(recovery_feed.frames_processed == 1,
+              "valid cycle did not decode immediately after overflow recovery");
   expect_true(session.counters().bytes_dropped == overflow.bytes_dropped + recovery_feed.bytes_dropped,
               "diagnostic dropped-byte counter did not match feed results");
-  expect_true(session.counters().buffer_recovery_events == 2,
-              "diagnostic recovery-event counter did not count both overflow recoveries");
-  expect_true(session.counters().zero_valid_record_frames > 0,
-              "garbage frame did not increment the zero-valid-record counter");
+  expect_true(session.counters().buffer_recovery_events == 1,
+              "diagnostic recovery-event counter did not count the overflow");
   verify_recovered_measurements(session, "buffer overflow recovery");
   std::cout << "[PASS] bounded buffer drops old bytes and recovers valid readings\n";
 }
 
-void test_malformed_and_partial_counters() {
-  ReplaySession session;
-  std::vector<uint8_t> frame(COMPLETE_FRAME_SIZE, 0x00);
-  frame[0] = MARKER_PRIMARY;
-  frame[1] = 0x13;
-  frame[2] = STATUS_IDLE;
-  frame[COMPLETE_FRAME_SIZE - 1] = MARKER_SECONDARY;
+void expect_structural_corruption_recovers(
+    const std::vector<uint8_t> &corrupted,
+    const std::vector<uint8_t> &valid_frame, const std::string &label);
 
-  const SEMMeterFeedResult result = session.feed(frame);
-  expect_true(result.frames_processed == 1, "diagnostic candidate frame was not processed");
-  expect_true(result.decoded_records == 0, "diagnostic candidate frame unexpectedly decoded a record");
-  expect_true(session.counters().malformed_record_candidates == 1,
-              "malformed-candidate counter did not increment exactly once");
-  expect_true(session.counters().partial_records == 1,
-              "partial-record counter did not increment exactly once");
-  expect_true(session.counters().zero_valid_record_frames == 1,
-              "zero-valid-record frame counter did not increment");
+void test_live_marker_pattern(const std::vector<uint8_t> &frame) {
+  expect_true(frame.size() == COMPLETE_FRAME_SIZE,
+              "live-marker fixture must contain exactly 447 bytes");
+  const size_t circuit_1_offset = find_circuit_1_offset(frame);
+  expect_true(circuit_1_offset == 28,
+              "live-marker fixture Circuit 1 did not begin at byte 28");
+  expect_true(circuit_1_offset + RECORD_SEQUENCE_SIZE == frame.size(),
+              "live-marker fixture did not end on the exact 447-byte cadence");
+
+  const std::array<uint8_t, RECORD_COUNT> expected_markers{
+      MARKER_PRIMARY,        MARKER_PRIMARY,        MARKER_LIVE_SECONDARY,
+      MARKER_LIVE_SECONDARY, MARKER_PRIMARY,        MARKER_PRIMARY,
+      MARKER_LIVE_SECONDARY, MARKER_LIVE_SECONDARY, MARKER_PRIMARY,
+      MARKER_PRIMARY,        MARKER_LIVE_SECONDARY, MARKER_LIVE_SECONDARY,
+      MARKER_LIVE_SECONDARY, MARKER_PRIMARY,        MARKER_LIVE_SECONDARY,
+      MARKER_LIVE_SECONDARY, MARKER_LIVE_SECONDARY, MARKER_LIVE_SECONDARY,
+      MARKER_LIVE_SECONDARY};
+  for (size_t record_id = 0; record_id < RECORD_COUNT; record_id++) {
+    const size_t offset = circuit_1_offset + record_id * RECORD_CADENCE_SIZE;
+    expect_true(frame[offset] == expected_markers[record_id],
+                "live-marker fixture marker pattern changed at record " +
+                    std::to_string(record_id));
+    expect_true(frame[offset + 1] == record_id,
+                "live-marker fixture record ordering changed");
+    expect_true(SEMMeterRecordParser::is_valid_status(frame[offset + 2]),
+                "live-marker fixture contains an invalid status");
+  }
+
+  ReplaySession session;
+  constexpr size_t LIVE_REPLAY_CYCLES = 6;
+  constexpr std::array<size_t, 4> LIVE_UART_CHUNKS{114, 114, 114, 105};
+  for (size_t cycle = 0; cycle < LIVE_REPLAY_CYCLES; cycle++) {
+    size_t offset = 0;
+    for (const size_t chunk_size : LIVE_UART_CHUNKS) {
+      session.feed(frame.data() + offset, chunk_size);
+      offset += chunk_size;
+    }
+    expect_true(offset == COMPLETE_FRAME_SIZE,
+                "live UART chunk sizes did not total 447 bytes");
+  }
+
+  expect_true(session.counters().frames_processed == LIVE_REPLAY_CYCLES,
+              "live-marker cycles were not accepted continuously");
+  expect_true(session.counters().records_decoded ==
+                  LIVE_REPLAY_CYCLES * RECORD_COUNT,
+              "live-marker replay did not decode every ordered record");
+  expect_true(session.counters().structural_cycle_rejections == 0,
+              "valid live-marker cycles caused structural rejections");
+  expect_true(session.counters().malformed_frames == 0,
+              "valid live-marker cycles opened a malformed episode");
+  expect_true(session.observer.primary_records > 0 &&
+                  session.observer.live_secondary_records > 0,
+              "mixed 0xFF/0x3C records were not both decoded");
+  expect_true(session.observer.secondary_records == 0,
+              "ordered live fixture unexpectedly used marker 0x3B");
+  verify_recovered_measurements(session, "114/114/114/105 live-marker replay");
+  std::cout << "[PASS] repeated mixed 0xFF/0x3C cycles decode without malformed diagnostics\n";
+}
+
+void test_live_marker_rejections_and_recovery(
+    const std::vector<uint8_t> &frame) {
+  const size_t circuit_1_offset = find_circuit_1_offset(frame);
+  const size_t target_offset =
+      circuit_1_offset + 2 * RECORD_CADENCE_SIZE;
+
+  std::vector<uint8_t> invalid_marker = frame;
+  invalid_marker[target_offset] = 0x3D;
+  expect_structural_corruption_recovers(invalid_marker, frame,
+                                        "live invalid marker");
+
+  std::vector<uint8_t> invalid_id = frame;
+  invalid_id[target_offset + 1] = 0x03;
+  expect_structural_corruption_recovers(invalid_id, frame,
+                                        "live corrupted ID");
+
+  std::vector<uint8_t> inserted = frame;
+  inserted.insert(inserted.begin() + static_cast<std::ptrdiff_t>(
+                                      target_offset + 8),
+                  0xA5);
+  expect_structural_corruption_recovers(inserted, frame,
+                                        "live inserted byte");
+
+  std::vector<uint8_t> deleted = frame;
+  deleted.erase(deleted.begin() +
+                static_cast<std::ptrdiff_t>(target_offset + 8));
+  expect_structural_corruption_recovers(deleted, frame,
+                                        "live deleted byte");
+  std::cout << "[PASS] live-marker cycles still reject invalid markers, IDs, and shifted boundaries\n";
+}
+
+void test_embedded_false_circuit_1_candidate(const std::vector<uint8_t> &frame) {
+  std::vector<uint8_t> corrupted = frame;
+  const size_t circuit_1_offset = find_circuit_1_offset(frame);
+  const size_t false_candidate_offset = circuit_1_offset + 3 * RECORD_CADENCE_SIZE + 4;
+  const uint32_t false_raw_power = 0x7004C034U;
+  corrupted[false_candidate_offset] = MARKER_SECONDARY;
+  corrupted[false_candidate_offset + 1] = 0x00;
+  corrupted[false_candidate_offset + 2] = esphome::sem_meter::STATUS_ACTIVE;
+  corrupted[false_candidate_offset + 14] =
+      static_cast<uint8_t>((false_raw_power >> 24) & 0xFF);
+  corrupted[false_candidate_offset + 15] =
+      static_cast<uint8_t>((false_raw_power >> 16) & 0xFF);
+  corrupted[false_candidate_offset + 16] =
+      static_cast<uint8_t>((false_raw_power >> 8) & 0xFF);
+  corrupted[false_candidate_offset + 17] =
+      static_cast<uint8_t>(false_raw_power & 0xFF);
+
+  ReplaySession session;
+  const SEMMeterFeedResult result = session.feed(corrupted);
+  expect_true(result.frames_processed == 1 && result.decoded_records == RECORD_COUNT,
+              "embedded payload candidate prevented valid cycle decoding");
+  expect_near(session.accumulator.parser().get_branch_power(0), 0.0f, 0.01f,
+              "embedded false candidate overwrote Circuit 1");
+  expect_true(session.observer.record_counts[0] == 1,
+              "embedded false candidate decoded Circuit 1 more than once");
+  verify_recovered_measurements(session, "embedded false Circuit 1 candidate");
+  std::cout << "[PASS] embedded 3B 00 03 / 0x7004C034 candidate is ignored\n";
+}
+
+void test_duplicate_circuit_1_candidate_inside_payload(const std::vector<uint8_t> &frame) {
+  std::vector<uint8_t> duplicated = frame;
+  const size_t circuit_1_offset = find_circuit_1_offset(frame);
+  const size_t duplicate_offset = circuit_1_offset + 7 * RECORD_CADENCE_SIZE + 4;
+  duplicated[duplicate_offset] = MARKER_PRIMARY;
+  duplicated[duplicate_offset + 1] = 0x00;
+  duplicated[duplicate_offset + 2] = STATUS_IDLE;
+
+  ReplaySession session;
+  const SEMMeterFeedResult result = session.feed(duplicated);
+  expect_true(result.frames_processed == 1 && result.decoded_records == RECORD_COUNT,
+              "payload duplicate prevented structural cycle decoding");
+  expect_true(session.observer.record_counts[0] == 1,
+              "payload duplicate was decoded as a second Circuit 1 record");
+  expect_true(session.counters().records_decoded == RECORD_COUNT,
+              "payload duplicate increased decoded-record diagnostics");
+  std::cout << "[PASS] duplicate Circuit 1 candidate inside payload is ignored\n";
+}
+
+void expect_structural_corruption_recovers(const std::vector<uint8_t> &corrupted,
+                                           const std::vector<uint8_t> &valid_frame,
+                                           const std::string &label) {
+  ReplaySession session;
+  const SEMMeterFeedResult damaged = session.feed(corrupted);
+  expect_true(damaged.frames_processed == 0,
+              label + ": damaged cycle was reported as decoded");
+  expect_true(damaged.decoded_records == 0,
+              label + ": damaged cycle mutated parser state");
+
+  const SEMMeterFeedResult recovery = session.feed(valid_frame);
+  expect_true(recovery.frames_processed == 1 &&
+                  recovery.decoded_records == RECORD_COUNT,
+              label + ": next valid cycle did not recover");
+  expect_true(session.counters().structural_cycle_rejections >= 1,
+              label + ": structural rejection was not diagnosed");
+  verify_recovered_measurements(session, label + " recovery");
+}
+
+void test_inserted_and_deleted_byte_recovery(const std::vector<uint8_t> &frame) {
+  const size_t circuit_1_offset = find_circuit_1_offset(frame);
+
+  std::vector<uint8_t> inserted = frame;
+  inserted.insert(inserted.begin() + static_cast<std::ptrdiff_t>(
+                                      circuit_1_offset + 6 * RECORD_CADENCE_SIZE + 8),
+                  0xA5);
+  expect_structural_corruption_recovers(inserted, frame, "inserted byte");
+
+  std::vector<uint8_t> deleted = frame;
+  deleted.erase(deleted.begin() + static_cast<std::ptrdiff_t>(
+                                    circuit_1_offset + 6 * RECORD_CADENCE_SIZE + 8));
+  expect_structural_corruption_recovers(deleted, frame, "deleted byte");
+  std::cout << "[PASS] inserted and deleted bytes reject the damaged cycle and recover\n";
+}
+
+void test_corrupted_record_headers_recover(const std::vector<uint8_t> &frame) {
+  const size_t circuit_1_offset = find_circuit_1_offset(frame);
+  const size_t target_offset = circuit_1_offset + 4 * RECORD_CADENCE_SIZE;
+
+  std::vector<uint8_t> marker_corruption = frame;
+  marker_corruption[target_offset] = 0xA5;
+  expect_structural_corruption_recovers(marker_corruption, frame, "corrupted marker");
+
+  std::vector<uint8_t> id_corruption = frame;
+  id_corruption[target_offset + 1] = 0x0E;
+  expect_structural_corruption_recovers(id_corruption, frame, "corrupted ID");
+
+  std::vector<uint8_t> status_corruption = frame;
+  status_corruption[target_offset + 2] = 0x02;
+  expect_structural_corruption_recovers(status_corruption, frame, "corrupted status");
+  std::cout << "[PASS] marker, ID, and status corruption recover on the next cycle\n";
+}
+
+void test_transactional_power_validation(const std::vector<uint8_t> &frame) {
+  const size_t circuit_1_offset = find_circuit_1_offset(frame);
+  const uint32_t baseline_raw_power = 0x0004C034U;
+  const uint32_t corrupted_raw_power = 0x7004C034U;
+  const uint32_t recovered_raw_power = baseline_raw_power + 95U;
+
+  std::vector<uint8_t> baseline = frame;
+  set_branch_raw_power(baseline, circuit_1_offset, baseline_raw_power);
+  std::vector<uint8_t> corrupted = baseline;
+  set_branch_raw_power(corrupted, circuit_1_offset, corrupted_raw_power);
+  std::vector<uint8_t> recovered = baseline;
+  set_branch_raw_power(recovered, circuit_1_offset, recovered_raw_power);
+
+  ReplaySession session;
+  SEMMeterValidator cycle_validator;
+
+  const SEMMeterFeedResult accepted =
+      session.feed_validated(baseline, cycle_validator, 1);
+  expect_true(accepted.frames_processed == 1 &&
+                  accepted.decoded_records == RECORD_COUNT,
+              "plausible baseline cycle was not accepted");
+  const float last_good = session.accumulator.parser().get_branch_power(0);
+  expect_near(last_good,
+              static_cast<float>(baseline_raw_power) /
+                  esphome::sem_meter::BRANCH_POWER_DIVISOR,
+              0.01f, "transactional baseline Circuit 1 power");
+  const size_t callbacks_after_baseline = session.observer.record_counts[0];
+
+  const SEMMeterFeedResult rejected =
+      session.feed_validated(corrupted, cycle_validator, 2);
+  expect_true(rejected.frames_processed == 0 &&
+                  rejected.decoded_records == 0 &&
+                  rejected.validation_rejections == 1,
+              "electrically impossible cycle was not rejected atomically");
+  expect_true(rejected.rejected_measurement ==
+                  MeasurementId::CIRCUIT_1_POWER &&
+                  rejected.rejection_reason ==
+                      ValidationFailureReason::ABOVE_MAXIMUM,
+              "Circuit 1 corruption reported the wrong rejection");
+  expect_near(rejected.rejected_value, 19782732.0f, 1.0f,
+              "validator did not inspect the corrupt candidate value");
+  expect_near(session.accumulator.parser().get_branch_power(0), last_good,
+              0.01f, "rejected candidate entered live parser state");
+  expect_true(session.observer.record_counts[0] == callbacks_after_baseline,
+              "rejected cycle reached the accepted-record observer");
+  expect_true(cycle_validator.rejected_sensor_values() == 1,
+              "transactional rejection diagnostic did not increment once");
+  expect_near(cycle_validator.last_accepted_value(
+                  MeasurementId::CIRCUIT_1_POWER),
+              last_good, 0.01f,
+              "validator lost its last-good Circuit 1 state");
+
+  const SEMMeterFeedResult recovery =
+      session.feed_validated(recovered, cycle_validator, 3);
+  expect_true(recovery.frames_processed == 1 &&
+                  recovery.decoded_records == RECORD_COUNT,
+              "following valid cycle did not recover");
+  expect_near(session.accumulator.parser().get_branch_power(0),
+              static_cast<float>(recovered_raw_power) /
+                  esphome::sem_meter::BRANCH_POWER_DIVISOR,
+              0.01f, "recovered Circuit 1 power");
+  expect_true(session.observer.record_counts[0] ==
+                  callbacks_after_baseline + 1,
+              "recovered cycle did not reach the publication observer");
+  std::cout << "[PASS] cycle validation is atomic and preserves last-good parser state\n";
+}
+
+void test_malformed_and_partial_counters() {
+  ReplaySession partial_session;
+  const std::array<uint8_t, 3> partial_candidate{MARKER_PRIMARY, 0x00, STATUS_IDLE};
+  partial_session.feed(partial_candidate.data(), partial_candidate.size());
+  partial_session.feed(nullptr, 0);
+  expect_true(partial_session.counters().partial_records == 1,
+              "incomplete structural candidate was counted more than once");
+
+  ReplaySession malformed_session;
+  std::vector<uint8_t> malformed(RECORD_SEQUENCE_SIZE, 0x00);
+  for (size_t record_id = 0; record_id < RECORD_COUNT; record_id++) {
+    const size_t offset = record_id * RECORD_CADENCE_SIZE;
+    malformed[offset] = MARKER_PRIMARY;
+    malformed[offset + 1] = static_cast<uint8_t>(record_id);
+    malformed[offset + 2] = STATUS_IDLE;
+  }
+  malformed[4 * RECORD_CADENCE_SIZE + 2] = 0x02;
+  const SEMMeterFeedResult result = malformed_session.feed(malformed);
+  expect_true(result.frames_processed == 0,
+              "structurally malformed cycle was reported as decoded");
+  expect_true(result.decoded_records == 0,
+              "structurally malformed cycle mutated parser state");
+  expect_true(result.structural_cycle_rejections == 1,
+              "structural cycle rejection was not reported once");
+  expect_true(malformed_session.counters().malformed_record_candidates == 1,
+              "malformed structural record was not counted once");
+  expect_true(malformed_session.counters().structural_cycle_rejections == 1,
+              "structural rejection diagnostic did not increment");
+  expect_true(malformed_session.counters().malformed_frames == 1,
+              "malformed-cycle diagnostic did not increment");
+  expect_true(malformed_session.counters().zero_valid_record_frames == 0,
+              "candidate rejection incorrectly incremented zero-record frames");
   std::cout << "[PASS] malformed and partial record diagnostics increment correctly\n";
+}
+
+std::vector<uint8_t> make_multi_candidate_damaged_cycle(
+    const std::vector<uint8_t> &frame,
+    std::array<size_t, 3> &false_candidate_offsets) {
+  std::vector<uint8_t> damaged = frame;
+  const size_t circuit_1_offset = find_circuit_1_offset(frame);
+  damaged[circuit_1_offset + 4 * RECORD_CADENCE_SIZE + 2] = 0x02;
+
+  false_candidate_offsets = {
+      circuit_1_offset + 3 * RECORD_CADENCE_SIZE + 4,
+      circuit_1_offset + 7 * RECORD_CADENCE_SIZE + 4,
+      circuit_1_offset + 12 * RECORD_CADENCE_SIZE + 4};
+  for (const size_t offset : false_candidate_offsets) {
+    damaged[offset] = MARKER_SECONDARY;
+    damaged[offset + 1] = 0x00;
+    damaged[offset + 2] = esphome::sem_meter::STATUS_ACTIVE;
+  }
+  return damaged;
+}
+
+void test_malformed_cycle_episode_deduplication(
+    const std::vector<uint8_t> &frame) {
+  std::array<size_t, 3> false_candidate_offsets{};
+  const std::vector<uint8_t> damaged =
+      make_multi_candidate_damaged_cycle(frame, false_candidate_offsets);
+
+  std::vector<uint8_t> damaged_then_valid;
+  damaged_then_valid.reserve(damaged.size() + frame.size());
+  damaged_then_valid.insert(damaged_then_valid.end(), damaged.begin(),
+                            damaged.end());
+  damaged_then_valid.insert(damaged_then_valid.end(), frame.begin(),
+                            frame.end());
+
+  ReplaySession single_feed_session;
+  const SEMMeterFeedResult single_feed =
+      single_feed_session.feed(damaged_then_valid);
+  expect_true(single_feed.structural_cycle_rejections ==
+                  false_candidate_offsets.size() + 1,
+              "granular structural rejection count was incorrect");
+  expect_true(single_feed.malformed_frames == 1,
+              "multiple false candidates inflated malformed frames");
+  expect_true(single_feed_session.counters().malformed_frames == 1,
+              "malformed-frame diagnostic was not episode-based");
+  expect_true(single_feed.frames_processed == 1,
+              "next valid cycle did not clear the malformed episode");
+
+  ReplaySession chunked_session;
+  SEMMeterHealthTracker health;
+  SEMMeterEventDispatcher dispatcher;
+  size_t malformed_events = 0;
+  size_t structural_rejections = 0;
+  for (size_t offset = 0; offset < damaged_then_valid.size();
+       offset += MAX_BYTES_PER_LOOP) {
+    const size_t chunk_size =
+        std::min(MAX_BYTES_PER_LOOP, damaged_then_valid.size() - offset);
+    const SEMMeterFeedResult result =
+        chunked_session.feed(damaged_then_valid.data() + offset, chunk_size);
+    malformed_events += result.malformed_frames;
+    structural_rejections += result.structural_cycle_rejections;
+    for (size_t event_index = 0; event_index < result.malformed_frames;
+         event_index++) {
+      expect_true(dispatch_health_update(
+                      dispatcher,
+                      health.record_malformed_frame(
+                          static_cast<uint32_t>(offset))),
+                  "malformed cycle event was not dispatched");
+    }
+  }
+  expect_true(malformed_events == 1,
+              "retained damaged bytes emitted duplicate malformed events");
+  expect_true(structural_rejections == false_candidate_offsets.size() + 1,
+              "chunked replay lost granular structural rejections");
+  expect_true(chunked_session.counters().malformed_frames == 1,
+              "chunked malformed diagnostic incremented more than once");
+  expect_true(dispatcher.event_count() == 1 &&
+                  dispatcher.last_event() == ComponentEvent::MALFORMED_FRAME,
+              "one damaged cycle did not dispatch exactly one malformed event");
+  expect_true(chunked_session.counters().frames_processed == 1,
+              "chunked malformed replay did not recover on the valid cycle");
+
+  const SEMMeterFeedResult next_episode =
+      chunked_session.feed(damaged_then_valid);
+  expect_true(next_episode.malformed_frames == 1,
+              "successful recovery did not clear the malformed episode");
+  expect_true(chunked_session.counters().malformed_frames == 2,
+              "second damaged physical cycle was not counted");
+  std::cout << "[PASS] malformed cycles deduplicate false candidates and retained bytes\n";
+}
+
+void test_yaml_entity_names() {
+  std::ifstream input("sem-meter.yaml");
+  expect_true(static_cast<bool>(input), "could not open sem-meter.yaml");
+  const std::string yaml((std::istreambuf_iterator<char>(input)),
+                         std::istreambuf_iterator<char>());
+  expect_true(yaml.find("circuit_4_name: surge protector") !=
+                  std::string::npos,
+              "intentional Surge Protector name is missing");
+  expect_true(yaml.find("circuit_13_name: \"A\\u2044C\"") !=
+                  std::string::npos,
+              "A/C fraction-slash spelling changed");
+  expect_true(yaml.find("circuit_13_name: A/C") == std::string::npos,
+              "literal A/C spelling would trigger ESPHome naming warnings");
+  expect_true(yaml.find("pin: GPIO41") != std::string::npos,
+              "confirmed GPIO41 buzzer output is missing");
+  expect_true(yaml.find("GPIO21") == std::string::npos,
+              "unsupported GPIO21 buzzer configuration returned");
+  expect_true(yaml.find("id: buzzer_parser_lost") != std::string::npos &&
+                  yaml.find("id: buzzer_parser_recovered") != std::string::npos,
+              "centralized parser watchdog buzzer scripts are missing");
+  expect_true(yaml.find("name: \"SEM Parser Healthy\"") != std::string::npos &&
+                  yaml.find("name: \"SEM Diagnostic Status\"") != std::string::npos,
+              "parser watchdog Home Assistant diagnostics are missing");
+  expect_true(yaml.find("name: \"Simulate Parser Timeout\"") != std::string::npos &&
+                  yaml.find("id: simulate_parser_timeout") != std::string::npos &&
+                  yaml.find("restore_mode: ALWAYS_OFF") != std::string::npos,
+              "safe parser-timeout simulation switch is missing or restorable");
+  expect_true(yaml.find("name: \"SEM Meter Online\"") != std::string::npos &&
+                  yaml.find("name: \"SEM WiFi Healthy\"") != std::string::npos &&
+                  yaml.find("name: \"SEM WiFi Diagnostic Status\"") != std::string::npos,
+              "WiFi watchdog Home Assistant diagnostics are missing");
+  expect_true(yaml.find("name: \"Simulate WiFi Timeout\"") != std::string::npos &&
+                  yaml.find("id: simulate_wifi_timeout") != std::string::npos,
+              "safe WiFi-timeout simulation switch is missing");
+  expect_true(yaml.find("name: \"Run SEM Self-Test\"") != std::string::npos &&
+                  yaml.find("id: run_sem_self_test") != std::string::npos,
+              "manual SEM self-test button is missing");
+  expect_true(yaml.find("name: \"SEM Self-Test Status\"") != std::string::npos &&
+                  yaml.find("name: \"SEM Self-Test Summary\"") != std::string::npos &&
+                  yaml.find("name: \"SEM Self-Test Failed Checks\"") != std::string::npos &&
+                  yaml.find("name: \"SEM Last Self-Test Duration\"") != std::string::npos,
+              "SEM self-test result entities are missing");
+  expect_true(yaml.find("id: buzzer_self_test_start") != std::string::npos &&
+                  yaml.find("id: buzzer_self_test_pass") != std::string::npos &&
+                  yaml.find("id: buzzer_self_test_fail") != std::string::npos,
+              "centralized self-test buzzer scripts are missing");
+  expect_true(yaml.find("name: \"SEM Component Version\"") != std::string::npos &&
+                  yaml.find("name: \"SEM ESPHome Version\"") != std::string::npos &&
+                  yaml.find("name: \"SEM Hardware Profile\"") != std::string::npos &&
+                  yaml.find("name: \"SEM Board Variant\"") != std::string::npos &&
+                  yaml.find("name: \"SEM Last Reset Reason\"") != std::string::npos,
+              "Diagnostics v3 identity entities are missing");
+  expect_true(yaml.find("name: \"SEM Parser Fault Count\"") != std::string::npos &&
+                  yaml.find("name: \"SEM WiFi Fault Count\"") != std::string::npos &&
+                  yaml.find("name: \"SEM Self-Test Run Count\"") != std::string::npos &&
+                  yaml.find("name: \"SEM Self-Test Failure Count\"") != std::string::npos,
+              "Diagnostics v3 runtime counter entities are missing");
+  expect_true(
+      yaml.find("name: \"Generate Diagnostic Report\"") != std::string::npos &&
+          yaml.find("id: generate_diagnostic_report") != std::string::npos &&
+          yaml.find("name: \"SEM Diagnostic Report Part 1\"") !=
+              std::string::npos &&
+          yaml.find("name: \"SEM Diagnostic Report Part 2\"") !=
+              std::string::npos &&
+          yaml.find("name: \"SEM Diagnostic Report Part 3\"") !=
+              std::string::npos,
+      "Diagnostics v4 report button or transport entities are missing");
+  std::cout << "[PASS] intentional YAML names preserve Surge Protector and A/C entity identity\n";
 }
 
 void test_timing_statistics() {
@@ -344,14 +867,16 @@ void test_diagnostic_string_conversions() {
                 "component state string conversion was incorrect");
   }
 
-  const std::array<ComponentEvent, 8> events{
+  const std::array<ComponentEvent, 10> events{
       ComponentEvent::NONE,          ComponentEvent::SYSTEM_STARTED,
       ComponentEvent::UART_STARTED,  ComponentEvent::UART_TIMEOUT,
       ComponentEvent::UART_RESTORED, ComponentEvent::BUFFER_OVERFLOW,
-      ComponentEvent::MALFORMED_FRAME, ComponentEvent::INVALID_SENSOR_VALUE};
-  const std::array<const char *, 8> expected_events{
+      ComponentEvent::MALFORMED_FRAME, ComponentEvent::INVALID_SENSOR_VALUE,
+      ComponentEvent::WIFI_TIMEOUT, ComponentEvent::WIFI_RESTORED};
+  const std::array<const char *, 10> expected_events{
       "NONE",          "SYSTEM_STARTED", "UART_STARTED",  "UART_TIMEOUT",
-      "UART_RESTORED", "BUFFER_OVERFLOW", "MALFORMED_FRAME", "INVALID_SENSOR_VALUE"};
+      "UART_RESTORED", "BUFFER_OVERFLOW", "MALFORMED_FRAME", "INVALID_SENSOR_VALUE",
+      "WIFI_TIMEOUT", "WIFI_RESTORED"};
   for (size_t index = 0; index < events.size(); index++) {
     expect_true(std::string(component_event_to_string(events[index])) == expected_events[index],
                 "component event string conversion was incorrect");
@@ -369,6 +894,19 @@ void test_diagnostic_string_conversions() {
               "DATA_TIMEOUT component was reported healthy");
   expect_true(!sem_meter_is_healthy(ComponentState::RECOVERING, true),
               "RECOVERING component was reported healthy");
+
+  const std::array<WiFiDiagnosticState, 6> wifi_states{
+      WiFiDiagnosticState::STARTING, WiFiDiagnosticState::WAITING_FOR_WIFI,
+      WiFiDiagnosticState::CONNECTED, WiFiDiagnosticState::DISCONNECTED_PENDING,
+      WiFiDiagnosticState::WIFI_TIMEOUT, WiFiDiagnosticState::RECOVERED};
+  const std::array<const char *, 6> expected_wifi_states{
+      "STARTING", "WAITING_FOR_WIFI", "CONNECTED", "DISCONNECTED_PENDING",
+      "WIFI_TIMEOUT", "RECOVERED"};
+  for (size_t index = 0; index < wifi_states.size(); index++) {
+    expect_true(std::string(wifi_diagnostic_state_to_string(wifi_states[index])) ==
+                    expected_wifi_states[index],
+                "WiFi diagnostic state string conversion was incorrect");
+  }
   std::cout << "[PASS] diagnostic state, event, and aggregate health conversions are correct\n";
 }
 
@@ -602,6 +1140,8 @@ void test_uart_health_transitions() {
   expect_true(dispatcher.listener_count() == 1, "listener count was not bounded to one");
   expect_true(health.uart_timeout_ms() == DEFAULT_UART_TIMEOUT_MS,
               "health tracker did not use the default 10-second timeout");
+  expect_true(health.startup_grace_period_ms() == DEFAULT_STARTUP_GRACE_PERIOD_MS,
+              "health tracker did not use the default 30-second startup grace period");
   expect_true(!health.uart_healthy(), "UART was healthy before a valid frame");
   expect_true(!health.sem_meter_healthy(), "SEM Meter was healthy before a valid frame");
 
@@ -661,6 +1201,9 @@ void test_uart_health_transitions() {
               "restored UART did not transition to RECEIVING_DATA");
   expect_true(health.uart_healthy(), "UART was not healthy after restoration");
   expect_true(health.sem_meter_healthy(), "SEM Meter was not healthy after restoration");
+  expect_true(health.has_completed_outage(), "restored UART did not retain completed outage state");
+  expect_true(health.last_completed_outage_duration_ms() == 20100,
+              "completed UART outage duration was incorrect");
   expect_true(dispatcher.event_count() == 4, "UART_RESTORED did not increment the event counter once");
 
   const auto continued_restored = health.record_valid_frame(20500);
@@ -706,6 +1249,761 @@ void test_uart_health_transitions() {
   std::cout << "[PASS] bounded listener dispatch, ordering, state, and anti-spam behavior are correct\n";
 }
 
+void test_startup_grace_and_first_frame_recovery() {
+  SEMMeterHealthTracker health;
+  health.setup_completed(1000);
+
+  expect_true(health.check_timeout(1000 + DEFAULT_STARTUP_GRACE_PERIOD_MS - 1).event ==
+                  ComponentEvent::NONE,
+              "startup watchdog fired before the 30-second grace period");
+  const auto timeout =
+      health.check_timeout(1000 + DEFAULT_STARTUP_GRACE_PERIOD_MS);
+  expect_true(timeout.event == ComponentEvent::UART_TIMEOUT &&
+                  health.state() == ComponentState::DATA_TIMEOUT,
+              "missing first frame did not cause one startup timeout");
+  expect_true(!health.has_received_valid_frame(),
+              "startup timeout fabricated a valid-frame timestamp");
+  expect_true(health.check_timeout(1000 + DEFAULT_STARTUP_GRACE_PERIOD_MS + 5000).event ==
+                  ComponentEvent::NONE,
+              "continued startup outage repeated the timeout event");
+
+  const uint32_t recovery_time = 1000 + DEFAULT_STARTUP_GRACE_PERIOD_MS + 7500;
+  const auto restored = health.record_valid_frame(recovery_time);
+  expect_true(restored.event == ComponentEvent::UART_RESTORED &&
+                  health.state() == ComponentState::RECEIVING_DATA,
+              "first valid frame after a declared startup failure did not restore health");
+  expect_true(health.last_completed_outage_duration_ms() == 7500,
+              "startup outage duration was not retained");
+  expect_true(health.record_valid_frame(recovery_time + 100).event == ComponentEvent::NONE,
+              "healthy data repeated startup recovery");
+
+  SEMMeterHealthTracker normal_boot;
+  normal_boot.setup_completed(0);
+  expect_true(normal_boot.record_valid_frame(500).event == ComponentEvent::UART_STARTED,
+              "normal first frame incorrectly produced a recovery event");
+  expect_true(!normal_boot.has_completed_outage(),
+              "normal boot fabricated a completed outage");
+  std::cout << "[PASS] startup grace, one-shot failure, recovery duration, and normal boot are correct\n";
+}
+
+void test_parser_timeout_simulation(const std::vector<uint8_t> &frame) {
+  SEMMeterHealthTracker health;
+  SEMMeterWatchdogGate watchdog_gate;
+  ReplaySession parser_session;
+
+  expect_true(!watchdog_gate.timeout_simulation_enabled(),
+              "parser-timeout simulation did not default OFF");
+  health.setup_completed(0);
+  const auto started = watchdog_gate.record_accepted_frame(health, 100);
+  expect_true(started.event == ComponentEvent::UART_STARTED &&
+                  health.last_valid_frame_timestamp_ms() == 100,
+              "accepted frame did not update watchdog with simulation OFF");
+
+  expect_true(watchdog_gate.set_timeout_simulation_enabled(true),
+              "enabling parser-timeout simulation reported no state change");
+  expect_true(watchdog_gate.timeout_simulation_enabled(),
+              "parser-timeout simulation did not remain enabled");
+
+  const auto parsed_while_simulated = parser_session.feed(frame);
+  expect_true(parsed_while_simulated.frames_processed == 1 &&
+                  parsed_while_simulated.decoded_records == RECORD_COUNT,
+              "simulation interrupted normal frame parsing");
+  expect_true(parser_session.accumulator.parser().get_branch_power(1) > 0.0f,
+              "simulation prevented normal electrical output updates");
+  const auto suppressed = watchdog_gate.record_accepted_frame(health, 1000);
+  expect_true(suppressed.event == ComponentEvent::NONE &&
+                  health.last_valid_frame_timestamp_ms() == 100,
+              "simulation updated the watchdog timestamp");
+
+  expect_true(health.check_timeout(100 + DEFAULT_UART_TIMEOUT_MS - 1).event ==
+                  ComponentEvent::NONE,
+              "simulated outage timed out before the configured threshold");
+  const auto timeout = health.check_timeout(100 + DEFAULT_UART_TIMEOUT_MS);
+  expect_true(timeout.event == ComponentEvent::UART_TIMEOUT &&
+                  health.state() == ComponentState::DATA_TIMEOUT,
+              "simulated outage did not produce one timeout transition");
+  expect_true(health.check_timeout(100 + (2 * DEFAULT_UART_TIMEOUT_MS)).event ==
+                  ComponentEvent::NONE,
+              "simulated outage repeated the timeout event");
+
+  expect_true(watchdog_gate.set_timeout_simulation_enabled(false),
+              "disabling parser-timeout simulation reported no state change");
+  const auto parsed_after_simulation = parser_session.feed(frame);
+  expect_true(parsed_after_simulation.frames_processed == 1 &&
+                  parsed_after_simulation.decoded_records == RECORD_COUNT,
+              "parser did not continue after simulation was disabled");
+  const uint32_t recovery_time = 100 + (2 * DEFAULT_UART_TIMEOUT_MS);
+  const auto restored =
+      watchdog_gate.record_accepted_frame(health, recovery_time);
+  expect_true(restored.event == ComponentEvent::UART_RESTORED &&
+                  health.state() == ComponentState::RECEIVING_DATA,
+              "next accepted frame did not restore the simulated outage");
+  expect_true(health.last_completed_outage_duration_ms() ==
+                  recovery_time - 100,
+              "simulated outage duration was incorrect");
+  expect_true(watchdog_gate.record_accepted_frame(health, recovery_time + 100).event ==
+                  ComponentEvent::NONE,
+              "healthy frames repeated the simulated recovery event");
+  std::cout << "[PASS] timeout simulation gates only watchdog accepted-frame notifications\n";
+}
+
+void test_wifi_startup_and_brief_disconnect() {
+  SEMMeterWiFiHealthTracker normal_boot;
+  normal_boot.setup_completed(0);
+  expect_true(normal_boot.evaluate(1000).current_state ==
+                  WiFiDiagnosticState::WAITING_FOR_WIFI,
+              "WiFi startup did not enter WAITING_FOR_WIFI");
+  const auto connected = normal_boot.set_real_connected(true, 5000);
+  expect_true(connected.current_state == WiFiDiagnosticState::CONNECTED &&
+                  connected.event == ComponentEvent::NONE &&
+                  normal_boot.healthy(),
+              "normal initial WiFi connection raised a recovery event");
+
+  const auto pending = normal_boot.set_real_connected(false, 10000);
+  expect_true(pending.current_state == WiFiDiagnosticState::DISCONNECTED_PENDING &&
+                  normal_boot.healthy(),
+              "brief disconnect was declared unhealthy immediately");
+  expect_true(normal_boot.evaluate(
+                  10000 + DEFAULT_WIFI_OUTAGE_THRESHOLD_MS - 1).event ==
+                  ComponentEvent::NONE,
+              "brief WiFi disconnect timed out early");
+  const auto brief_recovery = normal_boot.set_real_connected(
+      true, 10000 + DEFAULT_WIFI_OUTAGE_THRESHOLD_MS - 1);
+  expect_true(brief_recovery.current_state == WiFiDiagnosticState::CONNECTED &&
+                  brief_recovery.event == ComponentEvent::NONE &&
+                  !normal_boot.has_completed_outage(),
+              "brief WiFi reconnect produced a warning, recovery, or outage duration");
+
+  SEMMeterWiFiHealthTracker never_connected;
+  never_connected.setup_completed(100);
+  expect_true(never_connected.evaluate(
+                  100 + DEFAULT_WIFI_STARTUP_GRACE_PERIOD_MS - 1).event ==
+                  ComponentEvent::NONE,
+              "never-connected WiFi timed out before startup grace");
+  const auto startup_timeout = never_connected.evaluate(
+      100 + DEFAULT_WIFI_STARTUP_GRACE_PERIOD_MS);
+  expect_true(startup_timeout.event == ComponentEvent::WIFI_TIMEOUT &&
+                  startup_timeout.current_state == WiFiDiagnosticState::WIFI_TIMEOUT &&
+                  !never_connected.healthy(),
+              "never-connected WiFi did not time out after startup grace");
+  expect_true(never_connected.evaluate(
+                  100 + DEFAULT_WIFI_STARTUP_GRACE_PERIOD_MS + 10000).event ==
+                  ComponentEvent::NONE,
+              "never-connected WiFi repeated its timeout event");
+  std::cout << "[PASS] WiFi startup grace and brief disconnect behavior are correct\n";
+}
+
+void test_wifi_sustained_outage_and_recovery() {
+  SEMMeterWiFiHealthTracker wifi;
+  wifi.setup_completed(0);
+  wifi.set_real_connected(true, 100);
+  wifi.set_real_connected(false, 1000);
+
+  const auto timeout =
+      wifi.evaluate(1000 + DEFAULT_WIFI_OUTAGE_THRESHOLD_MS);
+  expect_true(timeout.event == ComponentEvent::WIFI_TIMEOUT &&
+                  timeout.current_state == WiFiDiagnosticState::WIFI_TIMEOUT &&
+                  !wifi.healthy(),
+              "sustained WiFi disconnect did not declare one timeout");
+  expect_true(wifi.evaluate(
+                  1000 + (2 * DEFAULT_WIFI_OUTAGE_THRESHOLD_MS)).event ==
+                  ComponentEvent::NONE,
+              "sustained WiFi outage repeated its timeout event");
+
+  const uint32_t recovery_time =
+      1000 + DEFAULT_WIFI_OUTAGE_THRESHOLD_MS + 10000;
+  const auto restored = wifi.set_real_connected(true, recovery_time);
+  expect_true(restored.event == ComponentEvent::WIFI_RESTORED &&
+                  restored.current_state == WiFiDiagnosticState::RECOVERED &&
+                  wifi.healthy(),
+              "declared WiFi outage did not recover exactly once");
+  expect_true(wifi.last_completed_outage_duration_ms() == recovery_time - 1000,
+              "WiFi outage duration was incorrect");
+  expect_true(wifi.evaluate(
+                  recovery_time + WIFI_RECOVERED_STATUS_DURATION_MS - 1).current_state ==
+                  WiFiDiagnosticState::RECOVERED,
+              "RECOVERED status cleared before five seconds");
+  expect_true(wifi.evaluate(
+                  recovery_time + WIFI_RECOVERED_STATUS_DURATION_MS).current_state ==
+                  WiFiDiagnosticState::CONNECTED,
+              "RECOVERED status did not return to CONNECTED");
+  std::cout << "[PASS] sustained WiFi outage, anti-spam, duration, and recovery are correct\n";
+}
+
+void test_wifi_timeout_simulation_and_rollover() {
+  SEMMeterWiFiHealthTracker wifi;
+  expect_true(!wifi.timeout_simulation_enabled(),
+              "WiFi timeout simulation did not default OFF");
+  wifi.setup_completed(0);
+  wifi.set_real_connected(true, 100);
+  const auto simulated_disconnect =
+      wifi.set_timeout_simulation_enabled(true, 1000);
+  expect_true(simulated_disconnect.current_state ==
+                  WiFiDiagnosticState::DISCONNECTED_PENDING &&
+                  wifi.real_connected() && !wifi.effective_connected(),
+              "WiFi simulation altered or failed to mask real connectivity");
+  const auto timeout =
+      wifi.evaluate(1000 + DEFAULT_WIFI_OUTAGE_THRESHOLD_MS);
+  expect_true(timeout.event == ComponentEvent::WIFI_TIMEOUT,
+              "WiFi simulation did not cause watchdog timeout");
+  expect_true(wifi.evaluate(
+                  1000 + (2 * DEFAULT_WIFI_OUTAGE_THRESHOLD_MS)).event ==
+                  ComponentEvent::NONE,
+              "WiFi simulation repeated the timeout event");
+  const uint32_t recovery_time =
+      1000 + DEFAULT_WIFI_OUTAGE_THRESHOLD_MS + 5000;
+  const auto restored =
+      wifi.set_timeout_simulation_enabled(false, recovery_time);
+  expect_true(restored.event == ComponentEvent::WIFI_RESTORED &&
+                  wifi.real_connected() && wifi.effective_connected(),
+              "disabling WiFi simulation did not restore effective connectivity");
+  expect_true(wifi.last_completed_outage_duration_ms() == recovery_time - 1000,
+              "simulated WiFi outage duration was incorrect");
+
+  SEMMeterWiFiHealthTracker rollover;
+  const uint32_t connected_time = 0xFFFFF000U;
+  rollover.setup_completed(connected_time - 100);
+  rollover.set_real_connected(true, connected_time);
+  const uint32_t disconnected_time = 0xFFFFFF00U;
+  rollover.set_real_connected(false, disconnected_time);
+  expect_true(rollover.evaluate(
+                  disconnected_time + DEFAULT_WIFI_OUTAGE_THRESHOLD_MS).event ==
+                  ComponentEvent::WIFI_TIMEOUT,
+              "millis rollover prevented WiFi timeout");
+  std::cout << "[PASS] WiFi simulation and outage timing remain isolated and wrap-safe\n";
+}
+
+SelfTestInputs healthy_self_test_inputs() {
+  SelfTestInputs inputs;
+  inputs.parser_watchdog_healthy = true;
+  inputs.has_valid_frame = true;
+  inputs.valid_frame_age_ms = 100;
+  inputs.parser_timeout_ms = DEFAULT_UART_TIMEOUT_MS;
+  inputs.wifi_real_connected = true;
+  inputs.wifi_watchdog_healthy = true;
+  inputs.wifi_timeout_simulation_active = false;
+  inputs.api_connected = true;
+  inputs.internal_state_consistent = true;
+  return inputs;
+}
+
+void test_self_test_initial_pass_and_duplicate_start() {
+  SEMMeterSelfTest self_test;
+  expect_true(self_test.status() == SelfTestStatus::NOT_RUN &&
+                  self_test.failed_checks() == SELF_TEST_FAILURE_NONE &&
+                  std::string(self_test.failed_checks_string()) == "NONE",
+              "self-test did not initialize to NOT_RUN/NONE");
+
+  const auto started = self_test.start(100);
+  expect_true(started.changed && started.signal == SelfTestSignal::STARTED &&
+                  self_test.status() == SelfTestStatus::RUNNING &&
+                  std::string(self_test.summary()) == "Self-test in progress",
+              "self-test did not enter RUNNING");
+  const auto duplicate = self_test.start(200);
+  expect_true(!duplicate.changed && duplicate.signal == SelfTestSignal::NONE &&
+                  self_test.status() == SelfTestStatus::RUNNING,
+              "duplicate self-test start was not ignored safely");
+  expect_true(!self_test.evaluate(100 + SELF_TEST_DURATION_MS - 1,
+                                 healthy_self_test_inputs()).changed,
+              "self-test completed before its bounded duration");
+
+  const auto passed = self_test.evaluate(
+      100 + SELF_TEST_DURATION_MS, healthy_self_test_inputs());
+  expect_true(passed.changed && passed.signal == SelfTestSignal::PASSED &&
+                  passed.status == SelfTestStatus::PASS &&
+                  self_test.last_duration_ms() == SELF_TEST_DURATION_MS &&
+                  std::string(self_test.summary()) == "All checks passed" &&
+                  std::string(self_test.failed_checks_string()) == "NONE",
+              "healthy self-test did not publish one complete PASS result");
+  expect_true(!self_test.evaluate(100 + (2 * SELF_TEST_DURATION_MS),
+                                 healthy_self_test_inputs()).changed,
+              "completed self-test emitted a duplicate pass signal");
+  std::cout << "[PASS] self-test initial state, duplicate protection, duration, and pass signal are correct\n";
+}
+
+void test_self_test_failure_tokens_and_ordering() {
+  SelfTestInputs inputs = healthy_self_test_inputs();
+
+  SEMMeterSelfTest parser;
+  parser.start(0);
+  inputs.parser_watchdog_healthy = false;
+  const auto parser_failed = parser.evaluate(SELF_TEST_DURATION_MS, inputs);
+  expect_true(parser_failed.signal == SelfTestSignal::FAILED &&
+                  parser.failed_checks() == SELF_TEST_FAILURE_PARSER &&
+                  std::string(parser.failed_checks_string()) == "PARSER" &&
+                  std::string(parser.summary()) == "Parser unhealthy",
+              "parser failure did not produce PARSER and one fail signal");
+
+  inputs = healthy_self_test_inputs();
+  SEMMeterSelfTest stale_parser;
+  stale_parser.start(0);
+  inputs.valid_frame_age_ms = inputs.parser_timeout_ms;
+  stale_parser.evaluate(SELF_TEST_DURATION_MS, inputs);
+  expect_true(stale_parser.failed_checks() == SELF_TEST_FAILURE_PARSER,
+              "stale valid-frame age did not fail the parser check");
+
+  inputs = healthy_self_test_inputs();
+  SEMMeterSelfTest wifi;
+  wifi.start(0);
+  inputs.wifi_real_connected = false;
+  const auto wifi_failed = wifi.evaluate(SELF_TEST_DURATION_MS, inputs);
+  expect_true(wifi_failed.signal == SelfTestSignal::FAILED &&
+                  wifi.failed_checks() == SELF_TEST_FAILURE_WIFI &&
+                  std::string(wifi.failed_checks_string()) == "WIFI",
+              "WiFi failure did not produce WIFI");
+
+  inputs = healthy_self_test_inputs();
+  SEMMeterSelfTest wifi_simulation;
+  wifi_simulation.start(0);
+  inputs.wifi_timeout_simulation_active = true;
+  wifi_simulation.evaluate(SELF_TEST_DURATION_MS, inputs);
+  expect_true(wifi_simulation.failed_checks() == SELF_TEST_FAILURE_WIFI,
+              "active WiFi simulation did not fail the WiFi check");
+
+  inputs = healthy_self_test_inputs();
+  SEMMeterSelfTest parser_wifi;
+  parser_wifi.start(0);
+  inputs.parser_watchdog_healthy = false;
+  inputs.wifi_watchdog_healthy = false;
+  parser_wifi.evaluate(SELF_TEST_DURATION_MS, inputs);
+  expect_true(parser_wifi.failed_checks() ==
+                  (SELF_TEST_FAILURE_PARSER | SELF_TEST_FAILURE_WIFI) &&
+                  std::string(parser_wifi.failed_checks_string()) ==
+                      "PARSER,WIFI" &&
+                  std::string(parser_wifi.summary()) ==
+                      "Multiple checks failed",
+              "combined failures did not retain stable PARSER,WIFI ordering");
+  std::cout << "[PASS] self-test parser, WiFi, and combined failure tokens are stable\n";
+}
+
+void test_self_test_api_internal_and_rollover() {
+  SelfTestInputs inputs = healthy_self_test_inputs();
+  SEMMeterSelfTest api;
+  api.start(0);
+  inputs.api_connected = false;
+  api.evaluate(SELF_TEST_DURATION_MS, inputs);
+  expect_true(api.failed_checks() == SELF_TEST_FAILURE_API &&
+                  std::string(api.failed_checks_string()) == "API" &&
+                  std::string(api.summary()) == "API disconnected",
+              "official API connectivity failure was not reported");
+
+  inputs = healthy_self_test_inputs();
+  SEMMeterSelfTest internal;
+  internal.start(0);
+  inputs.internal_state_consistent = false;
+  internal.evaluate(SELF_TEST_DURATION_MS, inputs);
+  expect_true(internal.failed_checks() == SELF_TEST_FAILURE_INTERNAL_STATE &&
+                  std::string(internal.failed_checks_string()) ==
+                      "INTERNAL_STATE",
+              "internal contradiction was not reported");
+
+  inputs = healthy_self_test_inputs();
+  SEMMeterSelfTest rollover;
+  const uint32_t started_at = 0xFFFFFF00U;
+  rollover.start(started_at);
+  const auto completed =
+      rollover.evaluate(started_at + SELF_TEST_DURATION_MS, inputs);
+  expect_true(completed.status == SelfTestStatus::PASS &&
+                  completed.duration_ms == SELF_TEST_DURATION_MS,
+              "self-test duration failed across millis rollover");
+  expect_true(std::string(self_test_status_to_string(SelfTestStatus::NOT_RUN)) ==
+                  "NOT_RUN" &&
+                  std::string(self_test_status_to_string(SelfTestStatus::RUNNING)) ==
+                  "RUNNING" &&
+                  std::string(self_test_status_to_string(SelfTestStatus::PASS)) ==
+                  "PASS" &&
+                  std::string(self_test_status_to_string(SelfTestStatus::FAIL)) ==
+                  "FAIL",
+              "self-test status strings are unstable");
+  std::cout << "[PASS] self-test API, internal-state, rollover, and status behavior are correct\n";
+}
+
+void test_runtime_counter_watchdog_transitions() {
+  SEMMeterRuntimeCounters counters;
+  const auto &initial = counters.values();
+  expect_true(initial.parser_fault_count == 0 &&
+                  initial.wifi_fault_count == 0 &&
+                  initial.self_test_run_count == 0 &&
+                  initial.self_test_failure_count == 0,
+              "runtime diagnostic counters did not initialize to zero");
+
+  SEMMeterHealthTracker parser;
+  parser.setup_completed(0);
+  expect_true(counters.record_event(
+                  parser.check_timeout(DEFAULT_STARTUP_GRACE_PERIOD_MS - 1).event) == 0 &&
+                  counters.values().parser_fault_count == 0,
+              "parser startup grace produced a false fault count");
+  counters.record_event(parser.record_valid_frame(100).event);
+  counters.record_event(parser.check_timeout(100 + DEFAULT_UART_TIMEOUT_MS).event);
+  expect_true(counters.values().parser_fault_count == 1,
+              "first parser timeout did not increment exactly once");
+  counters.record_event(
+      parser.check_timeout(100 + (2 * DEFAULT_UART_TIMEOUT_MS)).event);
+  expect_true(counters.values().parser_fault_count == 1,
+              "continued parser outage incremented repeatedly");
+  counters.record_event(
+      parser.record_valid_frame(100 + (2 * DEFAULT_UART_TIMEOUT_MS) + 1).event);
+  expect_true(counters.values().parser_fault_count == 1,
+              "parser recovery incremented the fault count");
+  counters.record_event(parser.check_timeout(
+      100 + (3 * DEFAULT_UART_TIMEOUT_MS) + 1).event);
+  expect_true(counters.values().parser_fault_count == 2,
+              "second distinct parser outage did not increment to two");
+
+  SEMMeterHealthTracker simulated_parser;
+  SEMMeterWatchdogGate parser_gate;
+  simulated_parser.setup_completed(0);
+  parser_gate.record_accepted_frame(simulated_parser, 10);
+  parser_gate.set_timeout_simulation_enabled(true);
+  parser_gate.record_accepted_frame(simulated_parser, 20);
+  SEMMeterRuntimeCounters simulated_parser_counters;
+  simulated_parser_counters.record_event(
+      simulated_parser.check_timeout(10 + DEFAULT_UART_TIMEOUT_MS).event);
+  simulated_parser_counters.record_event(
+      simulated_parser.check_timeout(10 + (2 * DEFAULT_UART_TIMEOUT_MS)).event);
+  expect_true(simulated_parser_counters.values().parser_fault_count == 1,
+              "simulated parser outage did not count exactly once");
+
+  SEMMeterWiFiHealthTracker wifi;
+  wifi.setup_completed(0);
+  expect_true(counters.record_event(
+                  wifi.evaluate(DEFAULT_WIFI_STARTUP_GRACE_PERIOD_MS - 1).event) == 0 &&
+                  counters.values().wifi_fault_count == 0,
+              "WiFi startup grace produced a false fault count");
+  wifi.set_real_connected(true, 10);
+  wifi.set_real_connected(false, 20);
+  counters.record_event(
+      wifi.evaluate(20 + DEFAULT_WIFI_OUTAGE_THRESHOLD_MS).event);
+  counters.record_event(
+      wifi.evaluate(20 + (2 * DEFAULT_WIFI_OUTAGE_THRESHOLD_MS)).event);
+  expect_true(counters.values().wifi_fault_count == 1,
+              "first WiFi outage counted more or less than once");
+  counters.record_event(
+      wifi.set_real_connected(true, 30 + DEFAULT_WIFI_OUTAGE_THRESHOLD_MS).event);
+  wifi.set_real_connected(false, 40 + DEFAULT_WIFI_OUTAGE_THRESHOLD_MS);
+  counters.record_event(wifi.evaluate(
+      40 + (2 * DEFAULT_WIFI_OUTAGE_THRESHOLD_MS)).event);
+  expect_true(counters.values().wifi_fault_count == 2,
+              "second distinct WiFi outage did not increment to two");
+
+  SEMMeterWiFiHealthTracker simulated_wifi;
+  SEMMeterRuntimeCounters simulated_wifi_counters;
+  simulated_wifi.setup_completed(0);
+  simulated_wifi.set_real_connected(true, 10);
+  simulated_wifi.set_timeout_simulation_enabled(true, 20);
+  simulated_wifi_counters.record_event(
+      simulated_wifi.evaluate(20 + DEFAULT_WIFI_OUTAGE_THRESHOLD_MS).event);
+  simulated_wifi_counters.record_event(
+      simulated_wifi.evaluate(
+          20 + (2 * DEFAULT_WIFI_OUTAGE_THRESHOLD_MS)).event);
+  expect_true(simulated_wifi_counters.values().wifi_fault_count == 1,
+              "simulated WiFi outage did not count exactly once");
+  std::cout << "[PASS] runtime watchdog counters track distinct real and simulated outages only\n";
+}
+
+void test_runtime_self_test_counters_and_rollover() {
+  SEMMeterRuntimeCounters counters;
+  SEMMeterSelfTest passing;
+  const auto pass_start = passing.start(0);
+  if (pass_start.changed) {
+    counters.record_self_test_start();
+  }
+  const auto duplicate = passing.start(1);
+  if (duplicate.changed) {
+    counters.record_self_test_start();
+  }
+  const auto pass_result =
+      passing.evaluate(SELF_TEST_DURATION_MS, healthy_self_test_inputs());
+  counters.record_self_test_result(pass_result.signal);
+  expect_true(counters.values().self_test_run_count == 1 &&
+                  counters.values().self_test_failure_count == 0,
+              "PASS or duplicate start corrupted self-test counters");
+
+  SEMMeterSelfTest failing;
+  const auto fail_start = failing.start(100);
+  if (fail_start.changed) {
+    counters.record_self_test_start();
+  }
+  SelfTestInputs failed_inputs = healthy_self_test_inputs();
+  failed_inputs.parser_watchdog_healthy = false;
+  const auto fail_result =
+      failing.evaluate(100 + SELF_TEST_DURATION_MS, failed_inputs);
+  counters.record_self_test_result(fail_result.signal);
+  counters.record_self_test_result(SelfTestSignal::NONE);
+  expect_true(counters.values().self_test_run_count == 2 &&
+                  counters.values().self_test_failure_count == 1,
+              "failed self-test did not increment run/failure exactly once");
+
+  const uint32_t maximum = std::numeric_limits<uint32_t>::max();
+  SEMMeterRuntimeCounters rollover(
+      {maximum, maximum, maximum, maximum});
+  rollover.record_event(ComponentEvent::UART_TIMEOUT);
+  rollover.record_event(ComponentEvent::WIFI_TIMEOUT);
+  rollover.record_self_test_start();
+  rollover.record_self_test_result(SelfTestSignal::FAILED);
+  const auto &wrapped = rollover.values();
+  expect_true(wrapped.parser_fault_count == 0 &&
+                  wrapped.wifi_fault_count == 0 &&
+                  wrapped.self_test_run_count == 0 &&
+                  wrapped.self_test_failure_count == 0,
+              "runtime counter rollover was not defined modulo 2^32");
+  std::cout << "[PASS] self-test counters reject duplicates and wrap explicitly at uint32 max\n";
+}
+
+DiagnosticReportSnapshot healthy_report_snapshot() {
+  DiagnosticReportSnapshot snapshot;
+  snapshot.component_version = SEM_METER_COMPONENT_VERSION;
+  snapshot.esphome_version = "2026.7.0";
+  snapshot.hardware_profile = SEM_METER_HARDWARE_PROFILE;
+  snapshot.board_variant = SEM_METER_BOARD_VARIANT;
+  snapshot.reset_reason = "POWER_ON";
+  snapshot.parser_health_known = true;
+  snapshot.parser_healthy = true;
+  snapshot.wifi_health_known = true;
+  snapshot.wifi_healthy = true;
+  snapshot.home_assistant_state_known = true;
+  snapshot.home_assistant_online = true;
+  snapshot.self_test_status = SelfTestStatus::PASS;
+  snapshot.counters = {2, 3, 4, 1};
+  snapshot.parser_outage_known = true;
+  snapshot.parser_outage_duration_ms = 12000;
+  snapshot.wifi_outage_known = true;
+  snapshot.wifi_outage_duration_ms = 125000;
+  return snapshot;
+}
+
+std::string reconstruct_report(const DiagnosticReportParts &parts) {
+  std::string reconstructed;
+  for (const auto &part : parts.values) {
+    if (part != DIAGNOSTIC_REPORT_UNUSED_PART) {
+      reconstructed += part;
+    }
+  }
+  return reconstructed;
+}
+
+void expect_ordered(const std::string &report,
+                    const std::vector<std::string> &tokens) {
+  size_t previous = 0;
+  for (const auto &token : tokens) {
+    const size_t found = report.find(token, previous);
+    expect_true(found != std::string::npos,
+                "diagnostic report is missing ordered token: " + token);
+    previous = found + token.size();
+  }
+}
+
+void test_diagnostic_report_states_and_format() {
+  DiagnosticReportSnapshot snapshot = healthy_report_snapshot();
+  const std::string healthy =
+      SEMMeterDiagnosticReportGenerator::build_diagnostic_report(snapshot);
+  expect_ordered(
+      healthy,
+      {"SEM Meter Diagnostic Report", "Report Format\n1",
+       std::string("Component Version\n") + SEM_METER_COMPONENT_VERSION,
+       "ESPHome Version\n2026.7.0",
+       "Hardware Profile\nESP32-S3 / UART RX GPIO39 / Buzzer GPIO41",
+       "Board Variant\nQUKY_GPIO41", "Reset Reason\nPOWER_ON",
+       "Parser\nHealthy", "WiFi\nHealthy", "Home Assistant\nOnline",
+       "Last Self-Test\nPASS", "Parser Faults\n2", "WiFi Faults\n3",
+       "Self-Test Runs\n4", "Self-Test Failures\n1",
+       "Last Parser Outage\n12 seconds",
+       "Last WiFi Outage\n125 seconds",
+       "Additional Diagnostics\nNone"});
+  expect_true(DIAGNOSTIC_REPORT_FORMAT_VERSION == 1,
+              "diagnostic report format version changed");
+
+  snapshot.parser_healthy = false;
+  expect_true(SEMMeterDiagnosticReportGenerator::build_diagnostic_report(
+                  snapshot)
+                      .find("Parser\nUnhealthy") != std::string::npos,
+              "parser-unhealthy report state is incorrect");
+  snapshot = healthy_report_snapshot();
+  snapshot.wifi_healthy = false;
+  expect_true(SEMMeterDiagnosticReportGenerator::build_diagnostic_report(
+                  snapshot)
+                      .find("WiFi\nUnhealthy") != std::string::npos,
+              "WiFi-unhealthy report state is incorrect");
+  snapshot = healthy_report_snapshot();
+  snapshot.home_assistant_online = false;
+  expect_true(SEMMeterDiagnosticReportGenerator::build_diagnostic_report(
+                  snapshot)
+                      .find("Home Assistant\nOffline") != std::string::npos,
+              "Home Assistant offline report state is incorrect");
+  snapshot.self_test_status = SelfTestStatus::FAIL;
+  expect_true(SEMMeterDiagnosticReportGenerator::build_diagnostic_report(
+                  snapshot)
+                      .find("Last Self-Test\nFAIL") != std::string::npos,
+              "self-test FAIL report state is incorrect");
+  snapshot.self_test_status = SelfTestStatus::NOT_RUN;
+  expect_true(SEMMeterDiagnosticReportGenerator::build_diagnostic_report(
+                  snapshot)
+                      .find("Last Self-Test\nNOT_RUN") != std::string::npos,
+              "self-test NOT_RUN report state is incorrect");
+  std::cout << "[PASS] diagnostic reports cover healthy, unhealthy, offline, PASS, FAIL, and NOT_RUN states\n";
+}
+
+void test_diagnostic_report_unknowns_and_side_effects() {
+  DiagnosticReportSnapshot snapshot = healthy_report_snapshot();
+  snapshot.component_version = nullptr;
+  snapshot.esphome_version = "";
+  snapshot.hardware_profile = nullptr;
+  snapshot.board_variant = "";
+  snapshot.reset_reason = nullptr;
+  snapshot.parser_health_known = false;
+  snapshot.wifi_health_known = false;
+  snapshot.home_assistant_state_known = false;
+  snapshot.self_test_status = SelfTestStatus::RUNNING;
+  snapshot.parser_outage_known = false;
+  snapshot.wifi_outage_known = false;
+  const DiagnosticReportSnapshot before = snapshot;
+
+  const std::string report =
+      SEMMeterDiagnosticReportGenerator::build_diagnostic_report(snapshot);
+  expect_true(std::count(report.begin(), report.end(), '\n') > 0,
+              "UNKNOWN report was empty");
+  expect_true(report.find("Component Version\nUNKNOWN") != std::string::npos &&
+                  report.find("Parser\nUNKNOWN") != std::string::npos &&
+                  report.find("WiFi\nUNKNOWN") != std::string::npos &&
+                  report.find("Home Assistant\nUNKNOWN") !=
+                      std::string::npos &&
+                  report.find("Last Self-Test\nUNKNOWN") != std::string::npos &&
+                  report.find("Last Parser Outage\nUNKNOWN") !=
+                      std::string::npos &&
+                  report.find("Last WiFi Outage\nUNKNOWN") !=
+                      std::string::npos,
+              "unavailable report values did not render as UNKNOWN");
+  expect_true(snapshot.component_version == before.component_version &&
+                  snapshot.parser_health_known ==
+                      before.parser_health_known &&
+                  snapshot.counters.parser_fault_count ==
+                      before.counters.parser_fault_count &&
+                  snapshot.parser_outage_duration_ms ==
+                      before.parser_outage_duration_ms,
+              "read-only report generation modified its diagnostic snapshot");
+  std::cout << "[PASS] unavailable report values are UNKNOWN and generation has no side effects\n";
+}
+
+void test_diagnostic_report_transport_and_duplicate_guard() {
+  SEMMeterDiagnosticReportGenerator generator;
+  expect_true(generator.begin_generation(),
+              "first diagnostic report request was rejected");
+  expect_true(!generator.begin_generation() && generator.generating(),
+              "duplicate diagnostic report request was not ignored");
+  generator.finish_generation();
+  expect_true(generator.begin_generation(),
+              "report generator did not accept a later request");
+  generator.finish_generation();
+
+  const std::string report =
+      SEMMeterDiagnosticReportGenerator::build_diagnostic_report(
+          healthy_report_snapshot());
+  DiagnosticReportParts parts;
+  expect_true(SEMMeterDiagnosticReportGenerator::split_report(report, parts),
+              "complete report did not fit the bounded transport");
+  expect_true(parts.used_parts == DIAGNOSTIC_REPORT_PART_COUNT,
+              "complete report did not use the expected three parts");
+  for (const auto &part : parts.values) {
+    expect_true(part.size() <= DIAGNOSTIC_REPORT_PART_MAX_LENGTH,
+                "a diagnostic report part exceeded 220 characters");
+    if (part != DIAGNOSTIC_REPORT_UNUSED_PART && &part != &parts.values.back()) {
+      expect_true(part.size() >= 2 &&
+                      part.substr(part.size() - 2) == "\n\n",
+                  "report split did not occur at a blank-line boundary");
+    }
+  }
+  expect_true(reconstruct_report(parts) == report,
+              "concatenated report parts did not reconstruct the report");
+
+  const std::vector<std::string> labels{
+      "Report Format",          "Component Version",
+      "ESPHome Version",        "Hardware Profile",
+      "Board Variant",          "Reset Reason",
+      "Parser",                 "WiFi",
+      "Home Assistant",         "Last Self-Test",
+      "Parser Faults",          "WiFi Faults",
+      "Self-Test Runs",         "Self-Test Failures",
+      "Last Parser Outage",     "Last WiFi Outage",
+      "Additional Diagnostics"};
+  for (const auto &label : labels) {
+    for (const auto &part : parts.values) {
+      if (part == label || (part.size() > label.size() &&
+                            part.compare(part.size() - label.size(),
+                                         label.size(), label) == 0)) {
+        throw std::runtime_error("report split separated label from value: " +
+                                 label);
+      }
+    }
+  }
+
+  DiagnosticReportParts reused = parts;
+  expect_true(SEMMeterDiagnosticReportGenerator::split_report(
+                  "Short Report\nOK", reused),
+              "short report could not be split");
+  expect_true(reused.used_parts == 1 &&
+                  reused.values[0] == "Short Report\nOK" &&
+                  reused.values[1] == DIAGNOSTIC_REPORT_UNUSED_PART &&
+                  reused.values[2] == DIAGNOSTIC_REPORT_UNUSED_PART,
+              "short report left stale text in unused transport parts");
+  std::cout << "[PASS] report transport is bounded, newline-safe, exact, stale-free, and duplicate-protected\n";
+}
+
+void test_foundation_identity_and_reset_reason_mapping() {
+  expect_true(!std::string(SEM_METER_COMPONENT_VERSION).empty() &&
+                  std::string(SEM_METER_COMPONENT_VERSION).find(' ') ==
+                      std::string::npos &&
+                  std::string(SEM_METER_BOARD_VARIANT) == "QUKY_GPIO41" &&
+                  std::string(SEM_METER_HARDWARE_PROFILE).find("GPIO39") !=
+                      std::string::npos &&
+                  std::string(SEM_METER_HARDWARE_PROFILE).find("GPIO41") !=
+                      std::string::npos,
+              "centralized version or hardware identity changed unexpectedly");
+
+  const std::array<SEMResetReason, 16> reasons{
+      SEMResetReason::UNKNOWN,
+      SEMResetReason::POWER_ON,
+      SEMResetReason::EXTERNAL_RESET,
+      SEMResetReason::SOFTWARE_RESET,
+      SEMResetReason::PANIC,
+      SEMResetReason::INTERRUPT_WATCHDOG,
+      SEMResetReason::TASK_WATCHDOG,
+      SEMResetReason::OTHER_WATCHDOG,
+      SEMResetReason::DEEP_SLEEP,
+      SEMResetReason::BROWNOUT,
+      SEMResetReason::SDIO_RESET,
+      SEMResetReason::USB_RESET,
+      SEMResetReason::JTAG_RESET,
+      SEMResetReason::EFUSE_ERROR,
+      SEMResetReason::POWER_GLITCH,
+      SEMResetReason::CPU_LOCKUP};
+  const std::array<const char *, 16> expected{
+      "UNKNOWN",
+      "POWER_ON",
+      "EXTERNAL_RESET",
+      "SOFTWARE_RESET",
+      "PANIC",
+      "INTERRUPT_WATCHDOG",
+      "TASK_WATCHDOG",
+      "OTHER_WATCHDOG",
+      "DEEP_SLEEP",
+      "BROWNOUT",
+      "SDIO_RESET",
+      "USB_RESET",
+      "JTAG_RESET",
+      "EFUSE_ERROR",
+      "POWER_GLITCH",
+      "CPU_LOCKUP"};
+  for (size_t index = 0; index < reasons.size(); index++) {
+    expect_true(std::string(sem_reset_reason_to_string(reasons[index])) ==
+                    expected[index],
+                "known reset reason mapped incorrectly");
+  }
+  expect_true(std::string(sem_reset_reason_to_string(
+                  static_cast<SEMResetReason>(255))) == "UNKNOWN",
+              "future unknown reset reason did not map safely to UNKNOWN");
+  std::cout << "[PASS] centralized identity and every reset-reason mapping are stable\n";
+}
+
 void test_wrap_safe_uart_timeout() {
   SEMMeterHealthTracker health;
   health.setup_completed(0xFFFFFE00U);
@@ -717,6 +2015,14 @@ void test_wrap_safe_uart_timeout() {
               "millis wrap prevented UART timeout");
   expect_true(health.milliseconds_since_last_valid_frame(timeout_time) == DEFAULT_UART_TIMEOUT_MS,
               "millis wrap produced an incorrect elapsed time");
+
+  SEMMeterHealthTracker startup_health;
+  const uint32_t setup_time = 0xFFFFFF00U;
+  startup_health.setup_completed(setup_time);
+  expect_true(startup_health.check_timeout(
+                  setup_time + DEFAULT_STARTUP_GRACE_PERIOD_MS).event ==
+                  ComponentEvent::UART_TIMEOUT,
+              "millis wrap prevented startup-grace timeout");
   std::cout << "[PASS] UART timeout arithmetic remains wrap-safe\n";
 }
 
@@ -779,28 +2085,60 @@ int main(int argc, char **argv) {
   try {
     const std::string fixture_path = argc > 1 ? argv[1] : "tests/captured_frame_001.hex";
     const std::vector<uint8_t> frame = load_hex_file(fixture_path);
+    const std::string live_fixture_path =
+        argc > 2 ? argv[2] : "tests/captured_live_markers_001.hex";
+    const std::vector<uint8_t> live_frame = load_hex_file(live_fixture_path);
     expect_true(frame.size() == COMPLETE_FRAME_SIZE,
                 "fixture must contain exactly 447 bytes; got " + std::to_string(frame.size()));
+    expect_true(live_frame.size() == COMPLETE_FRAME_SIZE,
+                "live-marker fixture must contain exactly 447 bytes; got " +
+                    std::to_string(live_frame.size()));
     std::cout << "[PASS] fixture length: " << frame.size() << " bytes\n";
+    std::cout << "[PASS] live-marker fixture length: " << live_frame.size()
+              << " bytes\n";
     std::cout << "[PASS] shared limits: MAX_BUFFER_SIZE=" << MAX_BUFFER_SIZE
               << ", overlap=" << RECORD_OVERLAP_SIZE << " bytes\n";
 
     test_chunked_replay(frame);
     test_bytewise_replay(frame);
+    test_live_marker_pattern(live_frame);
+    test_live_marker_rejections_and_recovery(live_frame);
     test_garbage_prefix_recovery(frame);
     test_half_frame_start_recovery(frame);
     test_back_to_back_frames(frame);
     test_buffer_recovery(frame);
+    test_embedded_false_circuit_1_candidate(frame);
+    test_duplicate_circuit_1_candidate_inside_payload(frame);
+    test_inserted_and_deleted_byte_recovery(frame);
+    test_corrupted_record_headers_recover(frame);
+    test_transactional_power_validation(frame);
+    test_transactional_power_validation(live_frame);
     test_malformed_and_partial_counters();
+    test_malformed_cycle_episode_deduplication(frame);
     test_timing_statistics();
     test_diagnostic_string_conversions();
     test_sensor_value_validation();
     test_startup_measurement_readiness();
     test_uart_health_transitions();
+    test_startup_grace_and_first_frame_recovery();
+    test_parser_timeout_simulation(frame);
+    test_wifi_startup_and_brief_disconnect();
+    test_wifi_sustained_outage_and_recovery();
+    test_wifi_timeout_simulation_and_rollover();
+    test_self_test_initial_pass_and_duplicate_start();
+    test_self_test_failure_tokens_and_ordering();
+    test_self_test_api_internal_and_rollover();
+    test_runtime_counter_watchdog_transitions();
+    test_runtime_self_test_counters_and_rollover();
+    test_diagnostic_report_states_and_format();
+    test_diagnostic_report_unknowns_and_side_effects();
+    test_diagnostic_report_transport_and_duplicate_guard();
+    test_foundation_identity_and_reset_reason_mapping();
     test_wrap_safe_uart_timeout();
     test_non_recursive_event_dispatch();
     test_retained_overlap(frame);
     test_idle_record_reset(frame);
+    test_yaml_entity_names();
 
     std::cout << "[PASS] all SEM Meter shared-accumulator replay tests passed\n";
     return 0;

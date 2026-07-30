@@ -13,6 +13,7 @@ inline constexpr float VOLTAGE_DIVISOR = 10.30f;
 
 inline constexpr uint8_t MARKER_PRIMARY = 0xFF;
 inline constexpr uint8_t MARKER_SECONDARY = 0x3B;
+inline constexpr uint8_t MARKER_LIVE_SECONDARY = 0x3C;
 inline constexpr uint8_t STATUS_IDLE = 0x01;
 inline constexpr uint8_t STATUS_ACTIVE = 0x03;
 inline constexpr uint8_t STATUS_ALTERNATE_ACTIVE = 0x07;
@@ -20,6 +21,10 @@ inline constexpr uint8_t STATUS_ALTERNATE_ACTIVE = 0x07;
 inline constexpr size_t RECORD_PAYLOAD_SIZE = 21;
 inline constexpr size_t RECORD_MINIMUM_SIZE = 2 + RECORD_PAYLOAD_SIZE;
 inline constexpr size_t RECORD_OVERLAP_SIZE = RECORD_MINIMUM_SIZE - 1;
+inline constexpr size_t RECORD_CADENCE_SIZE = 22;
+inline constexpr size_t RECORD_COUNT = 19;
+inline constexpr size_t RECORD_SEQUENCE_SIZE =
+    (RECORD_COUNT - 1) * RECORD_CADENCE_SIZE + RECORD_MINIMUM_SIZE;
 
 inline constexpr uint8_t LAST_BRANCH_RECORD_ID = 0x0F;
 inline constexpr uint8_t PHASE_A_RECORD_ID = 0x10;
@@ -101,7 +106,8 @@ class SEMMeterRecordParser {
   }
 
   static bool is_marker(uint8_t value) {
-    return value == MARKER_PRIMARY || value == MARKER_SECONDARY;
+    return value == MARKER_PRIMARY || value == MARKER_SECONDARY ||
+           value == MARKER_LIVE_SECONDARY;
   }
 
   static bool is_valid_status(uint8_t value) {

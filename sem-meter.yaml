@@ -1,8 +1,29 @@
+# ===========================================================
+# SEM Meter Physical CT Mapping
+#
+# CT 1  -> Breaker 6      -> Laundry
+# CT 2  -> Breaker 8      -> Kitchen Cooking
+# CT 3  -> Breaker 10     -> Master Bedroom
+# CT 4  -> Breaker 12     -> Surge Protector
+# CT 5  -> Breaker 22A    -> Generator Plug
+# CT 6  -> Breaker 22B    -> Microwave
+# CT 7  -> Breaker 24A    -> Air Handler
+# CT 8  -> Breaker 7      -> Unknown
+# CT 9  -> Breaker 5      -> Unknown
+# CT10  -> Breaker 21-23  -> Pool Pump (240V)
+# CT11  -> Breaker 19A    -> Master Bedroom Light
+# CT12  -> Breaker 17B    -> Lights Ely/Mami Bathroom
+# CT13  -> Breaker 13-15  -> A/C (240V)
+# CT14  -> Breaker 9      -> Garage/Laundry/Kitchen Lights
+# CT15  -> Breaker 3      -> Receptacle Below Panel
+# CT16  -> Breaker 1A     -> TP-Link Power Strip
+# ===========================================================
+
 substitutions:
   circuit_1_name: laundry
   circuit_2_name: kitchen cooking
   circuit_3_name: master bedroom
-  circuit_4_name: welder plug
+  circuit_4_name: surge protector
   circuit_5_name: generator plug
   circuit_6_name: microwave
   circuit_7_name: air handler
@@ -44,6 +65,10 @@ ota:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
+  on_connect:
+    - lambda: id(sem_meter_parser).set_wifi_connected(true);
+  on_disconnect:
+    - lambda: id(sem_meter_parser).set_wifi_connected(false);
 
   ap:
     ssid: "SEM Meter Fallback"
@@ -57,6 +82,79 @@ web_server:
 button:
   - platform: restart
     name: "Restart SEM Meter"
+  - platform: template
+    name: "Buzzer Two Beeps"
+    id: buzzer_two_beeps
+    disabled_by_default: true
+    entity_category: diagnostic
+    on_press:
+      - rtttl.play: "two short:d=4,o=5,b=100:16e6,16e6"
+  - platform: template
+    name: "Run SEM Self-Test"
+    id: run_sem_self_test
+    entity_category: diagnostic
+    on_press:
+      - lambda: id(sem_meter_parser).run_self_test();
+  - platform: template
+    name: "Generate Diagnostic Report"
+    id: generate_diagnostic_report
+    entity_category: diagnostic
+    on_press:
+      - lambda: id(sem_meter_parser).generate_diagnostic_report();
+
+# Onboard passive buzzer confirmed on GPIO41.
+# Requires LEDC/PWM; a static GPIO pulse does not produce a tone.
+output:
+  - platform: ledc
+    pin: GPIO41
+    id: buzzer_output
+
+rtttl:
+  output: buzzer_output
+  gain: 30%
+
+script:
+  # Three short warning tones, played once when parser communication is lost.
+  - id: buzzer_parser_lost
+    mode: single
+    then:
+      - rtttl.play: "parser lost:d=16,o=6,b=120:c,p,c,p,c"
+
+  # One short positive chirp, played once when parser communication recovers.
+  - id: buzzer_parser_recovered
+    mode: single
+    then:
+      - rtttl.play: "parser recovered:d=16,o=6,b=160:g"
+
+  # Two longer descending tones, distinct from the parser warning.
+  - id: buzzer_wifi_lost
+    mode: single
+    then:
+      - rtttl.play: "wifi lost:d=8,o=5,b=90:g,e"
+
+  # Two short ascending chirps for restored Wi-Fi connectivity.
+  - id: buzzer_wifi_recovered
+    mode: single
+    then:
+      - rtttl.play: "wifi recovered:d=16,o=6,b=160:c,g"
+
+  # One very short neutral chirp when a manual self-test starts.
+  - id: buzzer_self_test_start
+    mode: single
+    then:
+      - rtttl.play: "self test start:d=32,o=6,b=180:e"
+
+  # Three short ascending tones when every self-test check passes.
+  - id: buzzer_self_test_pass
+    mode: single
+    then:
+      - rtttl.play: "self test pass:d=16,o=6,b=180:c,e,g"
+
+  # One long low tone followed by two short low tones on self-test failure.
+  - id: buzzer_self_test_fail
+    mode: single
+    then:
+      - rtttl.play: "self test fail:d=16,o=4,b=80:4c,16p,16c,16p,16c"
 
 text_sensor:
   - platform: wifi_info
@@ -66,6 +164,13 @@ text_sensor:
       name: "Connected SSID"
     mac_address:
       name: "MAC Address"
+
+binary_sensor:
+  - platform: status
+    name: "SEM Meter Online"
+    id: sem_meter_online
+    device_class: connectivity
+    entity_category: diagnostic
 
 time:
   - platform: sntp
@@ -97,6 +202,145 @@ sem_meter:
   last_event:
     name: "Last Event"
     disabled_by_default: false
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: return x == "UART_TIMEOUT";
+            then:
+              - script.execute: buzzer_parser_lost
+        - if:
+            condition:
+              lambda: return x == "UART_RESTORED";
+            then:
+              - script.execute: buzzer_parser_recovered
+        - if:
+            condition:
+              lambda: return x == "WIFI_TIMEOUT";
+            then:
+              - script.execute: buzzer_wifi_lost
+        - if:
+            condition:
+              lambda: return x == "WIFI_RESTORED";
+            then:
+              - script.execute: buzzer_wifi_recovered
+  startup_grace_period: 30s
+  uart_timeout: 10s
+  wifi_startup_grace_period: 180s
+  wifi_outage_threshold: 120s
+  sem_parser_healthy:
+    name: "SEM Parser Healthy"
+    id: sem_parser_healthy
+    disabled_by_default: false
+  sem_diagnostic_status:
+    name: "SEM Diagnostic Status"
+    id: sem_diagnostic_status
+    disabled_by_default: false
+  sem_last_valid_frame_age:
+    name: "SEM Last Valid Frame Age"
+    id: sem_last_valid_frame_age
+    disabled_by_default: false
+  sem_last_parser_outage_duration:
+    name: "SEM Last Parser Outage Duration"
+    id: sem_last_parser_outage_duration
+    disabled_by_default: false
+  sem_wifi_healthy:
+    name: "SEM WiFi Healthy"
+    id: sem_wifi_healthy
+    disabled_by_default: false
+  sem_wifi_diagnostic_status:
+    name: "SEM WiFi Diagnostic Status"
+    id: sem_wifi_diagnostic_status
+    disabled_by_default: false
+  sem_last_wifi_outage_duration:
+    name: "SEM Last WiFi Outage Duration"
+    id: sem_last_wifi_outage_duration
+    disabled_by_default: false
+  sem_wifi_disconnect_age:
+    name: "SEM WiFi Disconnect Age"
+    id: sem_wifi_disconnect_age
+    disabled_by_default: false
+  sem_self_test_status:
+    name: "SEM Self-Test Status"
+    id: sem_self_test_status
+    disabled_by_default: false
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: return x == "RUNNING";
+            then:
+              - script.execute: buzzer_self_test_start
+        - if:
+            condition:
+              lambda: return x == "PASS";
+            then:
+              - script.execute: buzzer_self_test_pass
+        - if:
+            condition:
+              lambda: return x == "FAIL";
+            then:
+              - script.execute: buzzer_self_test_fail
+  sem_self_test_summary:
+    name: "SEM Self-Test Summary"
+    id: sem_self_test_summary
+    disabled_by_default: false
+  sem_self_test_failed_checks:
+    name: "SEM Self-Test Failed Checks"
+    id: sem_self_test_failed_checks
+    disabled_by_default: false
+  sem_last_self_test_duration:
+    name: "SEM Last Self-Test Duration"
+    id: sem_last_self_test_duration
+    disabled_by_default: false
+  sem_component_version:
+    name: "SEM Component Version"
+    id: sem_component_version
+    disabled_by_default: false
+  sem_esphome_version:
+    name: "SEM ESPHome Version"
+    id: sem_esphome_version
+    disabled_by_default: false
+  sem_hardware_profile:
+    name: "SEM Hardware Profile"
+    id: sem_hardware_profile
+    disabled_by_default: false
+  sem_board_variant:
+    name: "SEM Board Variant"
+    id: sem_board_variant
+    disabled_by_default: false
+  sem_last_reset_reason:
+    name: "SEM Last Reset Reason"
+    id: sem_last_reset_reason
+    disabled_by_default: false
+  sem_parser_fault_count:
+    name: "SEM Parser Fault Count"
+    id: sem_parser_fault_count
+    disabled_by_default: false
+  sem_wifi_fault_count:
+    name: "SEM WiFi Fault Count"
+    id: sem_wifi_fault_count
+    disabled_by_default: false
+  sem_self_test_run_count:
+    name: "SEM Self-Test Run Count"
+    id: sem_self_test_run_count
+    disabled_by_default: false
+  sem_self_test_failure_count:
+    name: "SEM Self-Test Failure Count"
+    id: sem_self_test_failure_count
+    disabled_by_default: false
+  sem_diagnostic_report_part_1:
+    name: "SEM Diagnostic Report Part 1"
+    id: sem_diagnostic_report_part_1
+    disabled_by_default: false
+  sem_diagnostic_report_part_2:
+    name: "SEM Diagnostic Report Part 2"
+    id: sem_diagnostic_report_part_2
+    disabled_by_default: false
+  sem_diagnostic_report_part_3:
+    name: "SEM Diagnostic Report Part 3"
+    id: sem_diagnostic_report_part_3
+    disabled_by_default: false
   milliseconds_since_last_frame:
     name: "Milliseconds Since Last Frame"
     disabled_by_default: true
@@ -126,6 +370,30 @@ sem_meter:
     disabled_by_default: true
 
 switch:
+  - platform: template
+    name: "Simulate WiFi Timeout"
+    id: simulate_wifi_timeout
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    disabled_by_default: true
+    entity_category: diagnostic
+    turn_on_action:
+      - lambda: id(sem_meter_parser).set_wifi_timeout_simulation(true);
+    turn_off_action:
+      - lambda: id(sem_meter_parser).set_wifi_timeout_simulation(false);
+
+  - platform: template
+    name: "Simulate Parser Timeout"
+    id: simulate_parser_timeout
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    disabled_by_default: true
+    entity_category: diagnostic
+    turn_on_action:
+      - lambda: id(sem_meter_parser).set_parser_timeout_simulation(true);
+    turn_off_action:
+      - lambda: id(sem_meter_parser).set_parser_timeout_simulation(false);
+
   - platform: template
     name: "${circuit_1_name} Enabled"
     id: circuit_1_enabled
