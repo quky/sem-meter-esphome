@@ -5,13 +5,53 @@
 #include <cinttypes>
 #include <cmath>
 
+#include "esp_system.h"
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
 #include "esphome/core/util.h"
+#include "esphome/core/version.h"
 
 namespace esphome::sem_meter {
 
 static const char *const TAG = "sem_meter";
+
+static SEMResetReason map_reset_reason(esp_reset_reason_t reason) {
+  switch (reason) {
+    case ESP_RST_POWERON:
+      return SEMResetReason::POWER_ON;
+    case ESP_RST_EXT:
+      return SEMResetReason::EXTERNAL_RESET;
+    case ESP_RST_SW:
+      return SEMResetReason::SOFTWARE_RESET;
+    case ESP_RST_PANIC:
+      return SEMResetReason::PANIC;
+    case ESP_RST_INT_WDT:
+      return SEMResetReason::INTERRUPT_WATCHDOG;
+    case ESP_RST_TASK_WDT:
+      return SEMResetReason::TASK_WATCHDOG;
+    case ESP_RST_WDT:
+      return SEMResetReason::OTHER_WATCHDOG;
+    case ESP_RST_DEEPSLEEP:
+      return SEMResetReason::DEEP_SLEEP;
+    case ESP_RST_BROWNOUT:
+      return SEMResetReason::BROWNOUT;
+    case ESP_RST_SDIO:
+      return SEMResetReason::SDIO_RESET;
+    case ESP_RST_USB:
+      return SEMResetReason::USB_RESET;
+    case ESP_RST_JTAG:
+      return SEMResetReason::JTAG_RESET;
+    case ESP_RST_EFUSE:
+      return SEMResetReason::EFUSE_ERROR;
+    case ESP_RST_PWR_GLITCH:
+      return SEMResetReason::POWER_GLITCH;
+    case ESP_RST_CPU_LOCKUP:
+      return SEMResetReason::CPU_LOCKUP;
+    case ESP_RST_UNKNOWN:
+    default:
+      return SEMResetReason::UNKNOWN;
+  }
+}
 
 void SEMMeterComponent::setup() {
   ESP_LOGI(TAG, "SEM Meter parser started");
@@ -23,6 +63,8 @@ void SEMMeterComponent::setup() {
   this->wifi_health_.setup_completed(now);
   this->publish_wifi_immediate_diagnostics_(ComponentEvent::NONE);
   this->publish_self_test_diagnostics_(false);
+  this->publish_startup_identity_();
+  this->publish_runtime_counters_(RUNTIME_COUNTER_ALL);
   this->publish_rejection_diagnostics_();
 }
 
@@ -106,6 +148,7 @@ bool SEMMeterComponent::dispatch_event_(ComponentEvent event, uint32_t timestamp
   if (!this->event_dispatcher_.dispatch(event, timestamp_ms)) {
     return false;
   }
+  this->publish_runtime_counters_(this->runtime_counters_.record_event(event));
 
   switch (event) {
     case ComponentEvent::NONE:
@@ -362,6 +405,8 @@ void SEMMeterComponent::run_self_test() {
   if (!update.changed) {
     return;
   }
+  this->publish_runtime_counters_(
+      this->runtime_counters_.record_self_test_start());
   ESP_LOGI(TAG, "SEM self-test started");
   this->apply_self_test_update_(update);
 }
@@ -451,6 +496,8 @@ void SEMMeterComponent::apply_self_test_update_(const SelfTestUpdate &update) {
   if (!update.changed) {
     return;
   }
+  this->publish_runtime_counters_(
+      this->runtime_counters_.record_self_test_result(update.signal));
   this->publish_self_test_diagnostics_(
       update.signal == SelfTestSignal::PASSED ||
       update.signal == SelfTestSignal::FAILED);
@@ -530,6 +577,58 @@ bool SEMMeterComponent::internal_diagnostic_state_consistent_() const {
   return true;
 }
 
+void SEMMeterComponent::publish_startup_identity_() {
+  if (this->sem_component_version_text_sensor_ != nullptr) {
+    this->sem_component_version_text_sensor_->publish_state(
+        SEM_METER_COMPONENT_VERSION);
+  }
+  if (this->sem_esphome_version_text_sensor_ != nullptr) {
+    this->sem_esphome_version_text_sensor_->publish_state(ESPHOME_VERSION);
+  }
+  if (this->sem_hardware_profile_text_sensor_ != nullptr) {
+    this->sem_hardware_profile_text_sensor_->publish_state(
+        SEM_METER_HARDWARE_PROFILE);
+  }
+  if (this->sem_board_variant_text_sensor_ != nullptr) {
+    this->sem_board_variant_text_sensor_->publish_state(
+        SEM_METER_BOARD_VARIANT);
+  }
+
+  const esp_reset_reason_t raw_reason = esp_reset_reason();
+  const SEMResetReason reset_reason = map_reset_reason(raw_reason);
+  ESP_LOGI(TAG, "ESP32 reset reason: %s (%d)",
+           sem_reset_reason_to_string(reset_reason),
+           static_cast<int>(raw_reason));
+  if (this->sem_last_reset_reason_text_sensor_ != nullptr) {
+    this->sem_last_reset_reason_text_sensor_->publish_state(
+        sem_reset_reason_to_string(reset_reason));
+  }
+}
+
+void SEMMeterComponent::publish_runtime_counters_(uint8_t changed_counters) {
+  const SEMMeterRuntimeCounterValues &values = this->runtime_counters_.values();
+  if ((changed_counters & RUNTIME_COUNTER_PARSER_FAULT) != 0 &&
+      this->sem_parser_fault_count_sensor_ != nullptr) {
+    this->sem_parser_fault_count_sensor_->publish_state(
+        static_cast<float>(values.parser_fault_count));
+  }
+  if ((changed_counters & RUNTIME_COUNTER_WIFI_FAULT) != 0 &&
+      this->sem_wifi_fault_count_sensor_ != nullptr) {
+    this->sem_wifi_fault_count_sensor_->publish_state(
+        static_cast<float>(values.wifi_fault_count));
+  }
+  if ((changed_counters & RUNTIME_COUNTER_SELF_TEST_RUN) != 0 &&
+      this->sem_self_test_run_count_sensor_ != nullptr) {
+    this->sem_self_test_run_count_sensor_->publish_state(
+        static_cast<float>(values.self_test_run_count));
+  }
+  if ((changed_counters & RUNTIME_COUNTER_SELF_TEST_FAILURE) != 0 &&
+      this->sem_self_test_failure_count_sensor_ != nullptr) {
+    this->sem_self_test_failure_count_sensor_->publish_state(
+        static_cast<float>(values.self_test_failure_count));
+  }
+}
+
 bool SEMMeterComponent::all_measurements_ready_(MeasurementId first, MeasurementId last) const {
   for (uint8_t raw = static_cast<uint8_t>(first); raw <= static_cast<uint8_t>(last); raw++) {
     if (!this->validator_.measurement_ready(static_cast<MeasurementId>(raw))) {
@@ -575,6 +674,10 @@ void SEMMeterComponent::update_measurement_readiness_(uint8_t record_id) {
 
 void SEMMeterComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "SEM Meter:");
+  ESP_LOGCONFIG(TAG, "  Component version: %s", SEM_METER_COMPONENT_VERSION);
+  ESP_LOGCONFIG(TAG, "  ESPHome version: %s", ESPHOME_VERSION);
+  ESP_LOGCONFIG(TAG, "  Board variant: %s", SEM_METER_BOARD_VARIANT);
+  ESP_LOGCONFIG(TAG, "  Hardware profile: %s", SEM_METER_HARDWARE_PROFILE);
   ESP_LOGCONFIG(TAG, "  Complete frame size: %zu bytes", COMPLETE_FRAME_SIZE);
   ESP_LOGCONFIG(TAG, "  Maximum bytes per loop: %zu", MAX_BYTES_PER_LOOP);
   ESP_LOGCONFIG(TAG, "  Maximum frames per loop: %zu", MAX_FRAMES_PER_LOOP);

@@ -112,6 +112,15 @@ Meter** before using the examples below.
 | SEM Self-Test Summary | `text_sensor.sem_meter_sem_self_test_summary` | Text sensor | — | Concise dashboard/notification result | `Self-test has not run` |
 | SEM Self-Test Failed Checks | `text_sensor.sem_meter_sem_self_test_failed_checks` | Text sensor | — | Stable comma-separated failure tokens | `NONE` |
 | SEM Last Self-Test Duration | `sensor.sem_meter_sem_last_self_test_duration` | Sensor | s | Most recent completed test duration | Unavailable until completion |
+| SEM Component Version | `text_sensor.sem_meter_sem_component_version` | Text sensor | — | Central SEM component version | Published once at startup |
+| SEM ESPHome Version | `text_sensor.sem_meter_sem_esphome_version` | Text sensor | — | ESPHome-generated `ESPHOME_VERSION` | Published once at startup |
+| SEM Hardware Profile | `text_sensor.sem_meter_sem_hardware_profile` | Text sensor | — | Concise verified pin/platform profile | Published once at startup |
+| SEM Board Variant | `text_sensor.sem_meter_sem_board_variant` | Text sensor | — | Stable profile identifier for this unit | `QUKY_GPIO41` |
+| SEM Last Reset Reason | `text_sensor.sem_meter_sem_last_reset_reason` | Text sensor | — | Stable ESP-IDF reset-reason name | Most recent boot reason |
+| SEM Parser Fault Count | `sensor.sem_meter_sem_parser_fault_count` | Sensor | — | Declared parser outages this boot | Runtime total |
+| SEM WiFi Fault Count | `sensor.sem_meter_sem_wifi_fault_count` | Sensor | — | Declared Wi-Fi outages this boot | Runtime total |
+| SEM Self-Test Run Count | `sensor.sem_meter_sem_self_test_run_count` | Sensor | — | Accepted self-tests this boot | Runtime total |
+| SEM Self-Test Failure Count | `sensor.sem_meter_sem_self_test_failure_count` | Sensor | — | Failed self-tests this boot | Runtime total |
 | Last Event | `text_sensor.sem_meter_last_event` | Text sensor | — | Latest internal reliability event | Usually `UART_STARTED` or another recent event |
 | WiFi Signal | `sensor.sem_meter_wifi_signal` | Sensor | dBm | Device Wi-Fi signal, independent of SEM UART health | Site dependent |
 
@@ -531,6 +540,91 @@ entities:
   - binary_sensor.sem_meter_sem_meter_online
 ```
 
+## Diagnostics v3 Foundation
+
+Diagnostics v3 adds stable identity and runtime evidence for future support
+reports. It does not generate a final diagnostic report yet.
+
+### Version and hardware identity
+
+`SEM Component Version` comes from the single
+`SEM_METER_COMPONENT_VERSION` constant in `sem_meter_foundation.h`; the literal
+is not repeated in component/YAML code. `SEM ESPHome Version` uses ESPHome's
+generated public `ESPHOME_VERSION` macro, so it reports the ESPHome release that
+actually built the firmware. No compile timestamp or changing build-date
+identity is introduced.
+
+`SEM Hardware Profile` and `SEM Board Variant` identify the verified local
+hardware configuration. They are declarations, not automatic board detection:
+the firmware does not probe unknown GPIOs or infer a PCB revision.
+
+| Hardware | UART RX | Buzzer | LED | Status |
+| --- | --- | --- | --- | --- |
+| Current verified unit | GPIO39 | GPIO41 | Unknown/not configured | Verified |
+| Community-reported alternate | Unknown/board dependent | GPIO21 | GPIO2 | Not yet verified locally; possible hardware revision |
+
+For the verified unit, GPIO21 is unused and UART TX is not configured. The
+GPIO21 buzzer and GPIO2 status LED mapping is community reported only and may
+belong to another PCB revision. GPIO2 LED support is not implemented.
+
+### Reset reason
+
+`SEM Last Reset Reason` calls ESP-IDF's public `esp_reset_reason()` once during
+component setup. This public high-level API reports the reason for the current
+boot and does not expose separate per-core values. No lower-level per-core
+reset API is used, so only one Home Assistant entity is created. The numeric
+value is retained in the startup log, while Home Assistant receives a stable
+readable name:
+
+```text
+POWER_ON
+EXTERNAL_RESET
+SOFTWARE_RESET
+PANIC
+INTERRUPT_WATCHDOG
+TASK_WATCHDOG
+OTHER_WATCHDOG
+DEEP_SLEEP
+BROWNOUT
+SDIO_RESET
+USB_RESET
+JTAG_RESET
+EFUSE_ERROR
+POWER_GLITCH
+CPU_LOCKUP
+UNKNOWN
+```
+
+Unknown future values safely publish `UNKNOWN`; the firmware does not reboot,
+clear, or automatically classify a software reset as a fault.
+
+### Runtime counter rules
+
+All four counters are `uint32_t`, start at zero on every boot, and publish zero
+once during setup. They publish again only when their value changes:
+
+- **Parser Fault Count:** increments once for each one-shot `UART_TIMEOUT`
+  transition, including a declared simulated outage. Continued timeout
+  evaluation and recovery do not increment it.
+- **WiFi Fault Count:** increments once for each one-shot `WIFI_TIMEOUT`,
+  including a declared simulated outage. Continued outage and recovery do not
+  increment it.
+- **Self-Test Run Count:** increments only when a new manual self-test start is
+  accepted. A duplicate press during `RUNNING` is ignored.
+- **Self-Test Failure Count:** increments only when an accepted self-test
+  completes with `FAIL`; `PASS` does not increment it.
+
+There are no preference writes, `restore_value`, or other persistence. Counts
+reset after reboot. At `UINT32_MAX`, the next increment explicitly wraps to
+zero (modulo 2³²); Home Assistant's `total_increasing` semantics treat that as
+a counter reset. In practice, reaching that limit would require billions of
+distinct events.
+
+Startup publication itself cannot produce a buzzer sound or a fault count.
+Parser and Wi-Fi grace periods continue to suppress timeout events until their
+existing thresholds expire. Persistent counters and the final
+“Generate Diagnostic Report” feature remain future milestones.
+
 ## Troubleshooting
 
 - Enable the disabled `Buzzer Two Beeps` entity from Home Assistant's SEM Meter
@@ -578,3 +672,4 @@ are implemented. The following items are not implemented:
 - Quiet hours
 - Telegram escalation
 - Persistent diagnostic counters across reboot
+- Final diagnostic-report generator

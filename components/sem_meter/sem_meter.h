@@ -10,6 +10,7 @@
 #include "esphome/core/component.h"
 #include "esphome/core/helpers.h"
 #include "sem_meter_accumulator.h"
+#include "sem_meter_foundation.h"
 #include "sem_meter_validator.h"
 
 namespace esphome::sem_meter {
@@ -116,6 +117,33 @@ class SEMMeterComponent final : public Component,
   void set_sem_last_self_test_duration_sensor(sensor::Sensor *sensor) {
     this->sem_last_self_test_duration_sensor_ = sensor;
   }
+  void set_sem_component_version_text_sensor(text_sensor::TextSensor *sensor) {
+    this->sem_component_version_text_sensor_ = sensor;
+  }
+  void set_sem_esphome_version_text_sensor(text_sensor::TextSensor *sensor) {
+    this->sem_esphome_version_text_sensor_ = sensor;
+  }
+  void set_sem_hardware_profile_text_sensor(text_sensor::TextSensor *sensor) {
+    this->sem_hardware_profile_text_sensor_ = sensor;
+  }
+  void set_sem_board_variant_text_sensor(text_sensor::TextSensor *sensor) {
+    this->sem_board_variant_text_sensor_ = sensor;
+  }
+  void set_sem_last_reset_reason_text_sensor(text_sensor::TextSensor *sensor) {
+    this->sem_last_reset_reason_text_sensor_ = sensor;
+  }
+  void set_sem_parser_fault_count_sensor(sensor::Sensor *sensor) {
+    this->sem_parser_fault_count_sensor_ = sensor;
+  }
+  void set_sem_wifi_fault_count_sensor(sensor::Sensor *sensor) {
+    this->sem_wifi_fault_count_sensor_ = sensor;
+  }
+  void set_sem_self_test_run_count_sensor(sensor::Sensor *sensor) {
+    this->sem_self_test_run_count_sensor_ = sensor;
+  }
+  void set_sem_self_test_failure_count_sensor(sensor::Sensor *sensor) {
+    this->sem_self_test_failure_count_sensor_ = sensor;
+  }
 
   float get_branch_power(size_t index) const { return this->accumulator_.parser().get_branch_power(index); }
   float get_phase_a_power() const { return this->accumulator_.parser().get_phase_a_power(); }
@@ -182,6 +210,9 @@ class SEMMeterComponent final : public Component,
   uint32_t get_last_self_test_duration_ms() const {
     return this->self_test_.last_duration_ms();
   }
+  const SEMMeterRuntimeCounterValues &get_runtime_counter_values() const {
+    return this->runtime_counters_.values();
+  }
   uint64_t get_rejected_sensor_values() const {
     return this->validator_.rejected_sensor_values();
   }
@@ -241,6 +272,8 @@ class SEMMeterComponent final : public Component,
   void publish_self_test_diagnostics_(bool publish_duration);
   SelfTestInputs collect_self_test_inputs_(uint32_t timestamp_ms) const;
   bool internal_diagnostic_state_consistent_() const;
+  void publish_startup_identity_();
+  void publish_runtime_counters_(uint8_t changed_counters);
   const char *diagnostic_status_(ComponentEvent transition_event) const;
   void update_measurement_readiness_(uint8_t record_id);
   bool all_measurements_ready_(MeasurementId first, MeasurementId last) const;
@@ -256,6 +289,7 @@ class SEMMeterComponent final : public Component,
   SEMMeterWatchdogGate watchdog_gate_{};
   SEMMeterWiFiHealthTracker wifi_health_{};
   SEMMeterSelfTest self_test_{};
+  SEMMeterRuntimeCounters runtime_counters_{};
   SEMMeterEventDispatcher event_dispatcher_{};
   SEMMeterValidator validator_{};
   SEMMeterValidator cycle_validator_{};
@@ -284,6 +318,15 @@ class SEMMeterComponent final : public Component,
   text_sensor::TextSensor *sem_self_test_summary_text_sensor_{nullptr};
   text_sensor::TextSensor *sem_self_test_failed_checks_text_sensor_{nullptr};
   sensor::Sensor *sem_last_self_test_duration_sensor_{nullptr};
+  text_sensor::TextSensor *sem_component_version_text_sensor_{nullptr};
+  text_sensor::TextSensor *sem_esphome_version_text_sensor_{nullptr};
+  text_sensor::TextSensor *sem_hardware_profile_text_sensor_{nullptr};
+  text_sensor::TextSensor *sem_board_variant_text_sensor_{nullptr};
+  text_sensor::TextSensor *sem_last_reset_reason_text_sensor_{nullptr};
+  sensor::Sensor *sem_parser_fault_count_sensor_{nullptr};
+  sensor::Sensor *sem_wifi_fault_count_sensor_{nullptr};
+  sensor::Sensor *sem_self_test_run_count_sensor_{nullptr};
+  sensor::Sensor *sem_self_test_failure_count_sensor_{nullptr};
   uint32_t last_diagnostic_publish_ms_{0};
   uint32_t last_watchdog_evaluation_ms_{0};
   uint32_t last_wifi_watchdog_evaluation_ms_{0};

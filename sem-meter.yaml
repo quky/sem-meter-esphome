@@ -287,6 +287,42 @@ sem_meter:
     name: "SEM Last Self-Test Duration"
     id: sem_last_self_test_duration
     disabled_by_default: false
+  sem_component_version:
+    name: "SEM Component Version"
+    id: sem_component_version
+    disabled_by_default: false
+  sem_esphome_version:
+    name: "SEM ESPHome Version"
+    id: sem_esphome_version
+    disabled_by_default: false
+  sem_hardware_profile:
+    name: "SEM Hardware Profile"
+    id: sem_hardware_profile
+    disabled_by_default: false
+  sem_board_variant:
+    name: "SEM Board Variant"
+    id: sem_board_variant
+    disabled_by_default: false
+  sem_last_reset_reason:
+    name: "SEM Last Reset Reason"
+    id: sem_last_reset_reason
+    disabled_by_default: false
+  sem_parser_fault_count:
+    name: "SEM Parser Fault Count"
+    id: sem_parser_fault_count
+    disabled_by_default: false
+  sem_wifi_fault_count:
+    name: "SEM WiFi Fault Count"
+    id: sem_wifi_fault_count
+    disabled_by_default: false
+  sem_self_test_run_count:
+    name: "SEM Self-Test Run Count"
+    id: sem_self_test_run_count
+    disabled_by_default: false
+  sem_self_test_failure_count:
+    name: "SEM Self-Test Failure Count"
+    id: sem_self_test_failure_count
+    disabled_by_default: false
   milliseconds_since_last_frame:
     name: "Milliseconds Since Last Frame"
     disabled_by_default: true

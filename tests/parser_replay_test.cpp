@@ -5,12 +5,14 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "sem_meter_accumulator.h"
+#include "sem_meter_foundation.h"
 #include "sem_meter_validator.h"
 
 namespace {
@@ -42,6 +44,8 @@ using esphome::sem_meter::SEMMeterEventListener;
 using esphome::sem_meter::SEMMeterHealthUpdate;
 using esphome::sem_meter::SEMMeterHealthTracker;
 using esphome::sem_meter::SEMMeterRecordParser;
+using esphome::sem_meter::SEMMeterRuntimeCounters;
+using esphome::sem_meter::SEMMeterRuntimeCounterValues;
 using esphome::sem_meter::SEMMeterSelfTest;
 using esphome::sem_meter::SEMMeterValidator;
 using esphome::sem_meter::SEMMeterWatchdogGate;
@@ -56,6 +60,10 @@ using esphome::sem_meter::SELF_TEST_FAILURE_WIFI;
 using esphome::sem_meter::SelfTestInputs;
 using esphome::sem_meter::SelfTestSignal;
 using esphome::sem_meter::SelfTestStatus;
+using esphome::sem_meter::SEMResetReason;
+using esphome::sem_meter::SEM_METER_BOARD_VARIANT;
+using esphome::sem_meter::SEM_METER_COMPONENT_VERSION;
+using esphome::sem_meter::SEM_METER_HARDWARE_PROFILE;
 using esphome::sem_meter::ValidationFailureReason;
 using esphome::sem_meter::WIFI_RECOVERED_STATUS_DURATION_MS;
 using esphome::sem_meter::WiFiDiagnosticState;
@@ -64,6 +72,7 @@ using esphome::sem_meter::component_state_to_string;
 using esphome::sem_meter::measurement_id_to_string;
 using esphome::sem_meter::measurement_unit_to_string;
 using esphome::sem_meter::sem_meter_is_healthy;
+using esphome::sem_meter::sem_reset_reason_to_string;
 using esphome::sem_meter::self_test_status_to_string;
 using esphome::sem_meter::validation_failure_reason_to_string;
 using esphome::sem_meter::wifi_diagnostic_state_to_string;
@@ -790,6 +799,17 @@ void test_yaml_entity_names() {
                   yaml.find("id: buzzer_self_test_pass") != std::string::npos &&
                   yaml.find("id: buzzer_self_test_fail") != std::string::npos,
               "centralized self-test buzzer scripts are missing");
+  expect_true(yaml.find("name: \"SEM Component Version\"") != std::string::npos &&
+                  yaml.find("name: \"SEM ESPHome Version\"") != std::string::npos &&
+                  yaml.find("name: \"SEM Hardware Profile\"") != std::string::npos &&
+                  yaml.find("name: \"SEM Board Variant\"") != std::string::npos &&
+                  yaml.find("name: \"SEM Last Reset Reason\"") != std::string::npos,
+              "Diagnostics v3 identity entities are missing");
+  expect_true(yaml.find("name: \"SEM Parser Fault Count\"") != std::string::npos &&
+                  yaml.find("name: \"SEM WiFi Fault Count\"") != std::string::npos &&
+                  yaml.find("name: \"SEM Self-Test Run Count\"") != std::string::npos &&
+                  yaml.find("name: \"SEM Self-Test Failure Count\"") != std::string::npos,
+              "Diagnostics v3 runtime counter entities are missing");
   std::cout << "[PASS] intentional YAML names preserve Surge Protector and A/C entity identity\n";
 }
 
@@ -1580,6 +1600,194 @@ void test_self_test_api_internal_and_rollover() {
   std::cout << "[PASS] self-test API, internal-state, rollover, and status behavior are correct\n";
 }
 
+void test_runtime_counter_watchdog_transitions() {
+  SEMMeterRuntimeCounters counters;
+  const auto &initial = counters.values();
+  expect_true(initial.parser_fault_count == 0 &&
+                  initial.wifi_fault_count == 0 &&
+                  initial.self_test_run_count == 0 &&
+                  initial.self_test_failure_count == 0,
+              "runtime diagnostic counters did not initialize to zero");
+
+  SEMMeterHealthTracker parser;
+  parser.setup_completed(0);
+  expect_true(counters.record_event(
+                  parser.check_timeout(DEFAULT_STARTUP_GRACE_PERIOD_MS - 1).event) == 0 &&
+                  counters.values().parser_fault_count == 0,
+              "parser startup grace produced a false fault count");
+  counters.record_event(parser.record_valid_frame(100).event);
+  counters.record_event(parser.check_timeout(100 + DEFAULT_UART_TIMEOUT_MS).event);
+  expect_true(counters.values().parser_fault_count == 1,
+              "first parser timeout did not increment exactly once");
+  counters.record_event(
+      parser.check_timeout(100 + (2 * DEFAULT_UART_TIMEOUT_MS)).event);
+  expect_true(counters.values().parser_fault_count == 1,
+              "continued parser outage incremented repeatedly");
+  counters.record_event(
+      parser.record_valid_frame(100 + (2 * DEFAULT_UART_TIMEOUT_MS) + 1).event);
+  expect_true(counters.values().parser_fault_count == 1,
+              "parser recovery incremented the fault count");
+  counters.record_event(parser.check_timeout(
+      100 + (3 * DEFAULT_UART_TIMEOUT_MS) + 1).event);
+  expect_true(counters.values().parser_fault_count == 2,
+              "second distinct parser outage did not increment to two");
+
+  SEMMeterHealthTracker simulated_parser;
+  SEMMeterWatchdogGate parser_gate;
+  simulated_parser.setup_completed(0);
+  parser_gate.record_accepted_frame(simulated_parser, 10);
+  parser_gate.set_timeout_simulation_enabled(true);
+  parser_gate.record_accepted_frame(simulated_parser, 20);
+  SEMMeterRuntimeCounters simulated_parser_counters;
+  simulated_parser_counters.record_event(
+      simulated_parser.check_timeout(10 + DEFAULT_UART_TIMEOUT_MS).event);
+  simulated_parser_counters.record_event(
+      simulated_parser.check_timeout(10 + (2 * DEFAULT_UART_TIMEOUT_MS)).event);
+  expect_true(simulated_parser_counters.values().parser_fault_count == 1,
+              "simulated parser outage did not count exactly once");
+
+  SEMMeterWiFiHealthTracker wifi;
+  wifi.setup_completed(0);
+  expect_true(counters.record_event(
+                  wifi.evaluate(DEFAULT_WIFI_STARTUP_GRACE_PERIOD_MS - 1).event) == 0 &&
+                  counters.values().wifi_fault_count == 0,
+              "WiFi startup grace produced a false fault count");
+  wifi.set_real_connected(true, 10);
+  wifi.set_real_connected(false, 20);
+  counters.record_event(
+      wifi.evaluate(20 + DEFAULT_WIFI_OUTAGE_THRESHOLD_MS).event);
+  counters.record_event(
+      wifi.evaluate(20 + (2 * DEFAULT_WIFI_OUTAGE_THRESHOLD_MS)).event);
+  expect_true(counters.values().wifi_fault_count == 1,
+              "first WiFi outage counted more or less than once");
+  counters.record_event(
+      wifi.set_real_connected(true, 30 + DEFAULT_WIFI_OUTAGE_THRESHOLD_MS).event);
+  wifi.set_real_connected(false, 40 + DEFAULT_WIFI_OUTAGE_THRESHOLD_MS);
+  counters.record_event(wifi.evaluate(
+      40 + (2 * DEFAULT_WIFI_OUTAGE_THRESHOLD_MS)).event);
+  expect_true(counters.values().wifi_fault_count == 2,
+              "second distinct WiFi outage did not increment to two");
+
+  SEMMeterWiFiHealthTracker simulated_wifi;
+  SEMMeterRuntimeCounters simulated_wifi_counters;
+  simulated_wifi.setup_completed(0);
+  simulated_wifi.set_real_connected(true, 10);
+  simulated_wifi.set_timeout_simulation_enabled(true, 20);
+  simulated_wifi_counters.record_event(
+      simulated_wifi.evaluate(20 + DEFAULT_WIFI_OUTAGE_THRESHOLD_MS).event);
+  simulated_wifi_counters.record_event(
+      simulated_wifi.evaluate(
+          20 + (2 * DEFAULT_WIFI_OUTAGE_THRESHOLD_MS)).event);
+  expect_true(simulated_wifi_counters.values().wifi_fault_count == 1,
+              "simulated WiFi outage did not count exactly once");
+  std::cout << "[PASS] runtime watchdog counters track distinct real and simulated outages only\n";
+}
+
+void test_runtime_self_test_counters_and_rollover() {
+  SEMMeterRuntimeCounters counters;
+  SEMMeterSelfTest passing;
+  const auto pass_start = passing.start(0);
+  if (pass_start.changed) {
+    counters.record_self_test_start();
+  }
+  const auto duplicate = passing.start(1);
+  if (duplicate.changed) {
+    counters.record_self_test_start();
+  }
+  const auto pass_result =
+      passing.evaluate(SELF_TEST_DURATION_MS, healthy_self_test_inputs());
+  counters.record_self_test_result(pass_result.signal);
+  expect_true(counters.values().self_test_run_count == 1 &&
+                  counters.values().self_test_failure_count == 0,
+              "PASS or duplicate start corrupted self-test counters");
+
+  SEMMeterSelfTest failing;
+  const auto fail_start = failing.start(100);
+  if (fail_start.changed) {
+    counters.record_self_test_start();
+  }
+  SelfTestInputs failed_inputs = healthy_self_test_inputs();
+  failed_inputs.parser_watchdog_healthy = false;
+  const auto fail_result =
+      failing.evaluate(100 + SELF_TEST_DURATION_MS, failed_inputs);
+  counters.record_self_test_result(fail_result.signal);
+  counters.record_self_test_result(SelfTestSignal::NONE);
+  expect_true(counters.values().self_test_run_count == 2 &&
+                  counters.values().self_test_failure_count == 1,
+              "failed self-test did not increment run/failure exactly once");
+
+  const uint32_t maximum = std::numeric_limits<uint32_t>::max();
+  SEMMeterRuntimeCounters rollover(
+      {maximum, maximum, maximum, maximum});
+  rollover.record_event(ComponentEvent::UART_TIMEOUT);
+  rollover.record_event(ComponentEvent::WIFI_TIMEOUT);
+  rollover.record_self_test_start();
+  rollover.record_self_test_result(SelfTestSignal::FAILED);
+  const auto &wrapped = rollover.values();
+  expect_true(wrapped.parser_fault_count == 0 &&
+                  wrapped.wifi_fault_count == 0 &&
+                  wrapped.self_test_run_count == 0 &&
+                  wrapped.self_test_failure_count == 0,
+              "runtime counter rollover was not defined modulo 2^32");
+  std::cout << "[PASS] self-test counters reject duplicates and wrap explicitly at uint32 max\n";
+}
+
+void test_foundation_identity_and_reset_reason_mapping() {
+  expect_true(!std::string(SEM_METER_COMPONENT_VERSION).empty() &&
+                  std::string(SEM_METER_COMPONENT_VERSION).find(' ') ==
+                      std::string::npos &&
+                  std::string(SEM_METER_BOARD_VARIANT) == "QUKY_GPIO41" &&
+                  std::string(SEM_METER_HARDWARE_PROFILE).find("GPIO39") !=
+                      std::string::npos &&
+                  std::string(SEM_METER_HARDWARE_PROFILE).find("GPIO41") !=
+                      std::string::npos,
+              "centralized version or hardware identity changed unexpectedly");
+
+  const std::array<SEMResetReason, 16> reasons{
+      SEMResetReason::UNKNOWN,
+      SEMResetReason::POWER_ON,
+      SEMResetReason::EXTERNAL_RESET,
+      SEMResetReason::SOFTWARE_RESET,
+      SEMResetReason::PANIC,
+      SEMResetReason::INTERRUPT_WATCHDOG,
+      SEMResetReason::TASK_WATCHDOG,
+      SEMResetReason::OTHER_WATCHDOG,
+      SEMResetReason::DEEP_SLEEP,
+      SEMResetReason::BROWNOUT,
+      SEMResetReason::SDIO_RESET,
+      SEMResetReason::USB_RESET,
+      SEMResetReason::JTAG_RESET,
+      SEMResetReason::EFUSE_ERROR,
+      SEMResetReason::POWER_GLITCH,
+      SEMResetReason::CPU_LOCKUP};
+  const std::array<const char *, 16> expected{
+      "UNKNOWN",
+      "POWER_ON",
+      "EXTERNAL_RESET",
+      "SOFTWARE_RESET",
+      "PANIC",
+      "INTERRUPT_WATCHDOG",
+      "TASK_WATCHDOG",
+      "OTHER_WATCHDOG",
+      "DEEP_SLEEP",
+      "BROWNOUT",
+      "SDIO_RESET",
+      "USB_RESET",
+      "JTAG_RESET",
+      "EFUSE_ERROR",
+      "POWER_GLITCH",
+      "CPU_LOCKUP"};
+  for (size_t index = 0; index < reasons.size(); index++) {
+    expect_true(std::string(sem_reset_reason_to_string(reasons[index])) ==
+                    expected[index],
+                "known reset reason mapped incorrectly");
+  }
+  expect_true(std::string(sem_reset_reason_to_string(
+                  static_cast<SEMResetReason>(255))) == "UNKNOWN",
+              "future unknown reset reason did not map safely to UNKNOWN");
+  std::cout << "[PASS] centralized identity and every reset-reason mapping are stable\n";
+}
+
 void test_wrap_safe_uart_timeout() {
   SEMMeterHealthTracker health;
   health.setup_completed(0xFFFFFE00U);
@@ -1704,6 +1912,9 @@ int main(int argc, char **argv) {
     test_self_test_initial_pass_and_duplicate_start();
     test_self_test_failure_tokens_and_ordering();
     test_self_test_api_internal_and_rollover();
+    test_runtime_counter_watchdog_transitions();
+    test_runtime_self_test_counters_and_rollover();
+    test_foundation_identity_and_reset_reason_mapping();
     test_wrap_safe_uart_timeout();
     test_non_recursive_event_dispatch();
     test_retained_overlap(frame);

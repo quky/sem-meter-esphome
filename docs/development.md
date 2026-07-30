@@ -20,6 +20,7 @@ The local `sem_meter` component separates responsibilities:
 | `sem_meter_parser.h` | ESPHome-independent record validation and field decoding |
 | `sem_meter_accumulator.h` | Fixed-capacity stream accumulation and bounded frame processing |
 | `sem_meter_diagnostics.h` | Counters, timing, independent parser/Wi-Fi health state machines, outage durations, and bounded event dispatch |
+| `sem_meter_foundation.h` | Centralized component/hardware identity, portable reset-reason names, and runtime-only diagnostic counters |
 | `sem_meter.h/.cpp` | UART integration, loop budgets, logging, and component getters |
 | `__init__.py` | ESPHome schema, UART registration, and configurable calibration |
 
@@ -51,6 +52,13 @@ The final snapshot checks parser health and frame age, real Wi-Fi plus its
 watchdog and simulation state, ESPHome's official `api_is_connected()` result,
 and conservative internal invariants. Entity publication and RTTTL dispatch
 remain in the ESPHome integration/YAML layers.
+
+Diagnostics v3 counter decisions remain in the native-testable foundation
+layer. The ESPHome component forwards only one-shot watchdog events and
+accepted/completed self-test transitions, then publishes the changed counter.
+Identity and reset reason are published once during setup. The reset reason
+uses ESP-IDF's public `esp_reset_reason()` API; `ESPHOME_VERSION` comes from
+ESPHome's generated public version header.
 
 ## Behavioral invariants
 

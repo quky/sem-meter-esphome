@@ -69,3 +69,8 @@ The executable uses only the C++ standard library. Its replay coverage includes:
 - Duplicate self-test start rejection and one-shot result signals
 - Parser, Wi-Fi, API, internal-state, and ordered combined failure tokens
 - Self-test duration across `millis()` rollover
+- Centralized component/hardware identity constants
+- All supported reset-reason names plus safe unknown handling
+- Runtime parser/Wi-Fi counters across real, simulated, recovered, and repeated outages
+- Runtime self-test run/failure counters and duplicate-start protection
+- Explicit runtime-counter rollover from `UINT32_MAX` to zero

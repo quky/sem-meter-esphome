@@ -26,6 +26,7 @@ tasks.
 - One-shot Wi-Fi timeout and recovery alerts with conservative 180/120-second timing
 - Safe Wi-Fi-timeout simulation that leaves Wi-Fi, API, UART, and measurements running
 - Manual nonblocking SEM self-test with parser, Wi-Fi, API, and consistency checks
+- Diagnostics v3 identity, reset-reason reporting, and runtime fault/test counters
 - Fixed-capacity 447-byte UART frame accumulation
 - Support for `0xFF`, captured-fixture `0x3B`, and live-stream `0x3C` record markers
 - Host-side captured-frame, recovery, diagnostics, and AddressSanitizer tests
@@ -67,6 +68,13 @@ UART parsing and sensor updates continue. It reports `PASS` or `FAIL`, a
 concise summary, stable failed-check tokens, and duration. The self-test also
 dispatches distinct start/pass/fail buzzer commands, but cannot electronically
 prove that the passive buzzer was physically audible.
+
+Diagnostics v3 publishes the centralized component version, generated ESPHome
+version, verified hardware profile, stable board variant, and the ESP-IDF reset
+reason once at startup. Runtime-only counters track declared parser and Wi-Fi
+outages plus accepted and failed self-tests. Counters start at zero after every
+reboot; persistence and the final diagnostic-report generator are intentionally
+reserved for later milestones.
 
 ## Sensor value validation
 
@@ -121,6 +129,7 @@ before connecting a programmer.
 │       ├── sem_meter.h
 │       ├── sem_meter_accumulator.h
 │       ├── sem_meter_diagnostics.h
+│       ├── sem_meter_foundation.h
 │       ├── sem_meter_parser.h
 │       ├── sem_meter_validator.cpp
 │       └── sem_meter_validator.h
