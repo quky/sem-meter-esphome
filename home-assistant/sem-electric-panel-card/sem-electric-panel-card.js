@@ -2,9 +2,12 @@
   "use strict";
 
   const CARD_TAG = "sem-electric-panel-card";
+  const EDITOR_TAG = "sem-electric-panel-card-editor";
   const CARD_TYPE = "custom:sem-electric-panel-card";
   const MAX_CLAMPS = 16;
   const VALID_UNITS = new Set(["auto", "W", "kW", "A"]);
+  const IMPORT_FILL = "fill";
+  const IMPORT_REPLACE = "replace";
 
   const STYLE = `
     :host {
@@ -322,6 +325,7 @@
     static getStubConfig() {
       return {
         title: "Electrical Panel",
+        device_id: "",
         main: {
           name: "Main Breaker",
           power_entity: "",
@@ -342,6 +346,14 @@
     }
 
     static getConfigForm() {
+      return this._buildConfigForm(null, null, true);
+    }
+
+    static getConfigElement() {
+      return document.createElement(EDITOR_TAG);
+    }
+
+    static _buildConfigForm(config, hass, includeDevice) {
       const entitySelector = {
         entity: {
           filter: {
@@ -352,59 +364,69 @@
 
       const clampSections = Array.from(
         { length: MAX_CLAMPS },
-        (_, index) => ({
-          type: "expandable",
-          name: String(index),
-          title: `Clamp ${index + 1}`,
-          icon: "mdi:current-ac",
-          schema: [
-            {
-              name: "clamp",
-              type: "integer",
-              default: index + 1,
-              disabled: true,
-            },
-            { name: "entity", selector: entitySelector },
-            { name: "name", selector: { text: {} } },
-            { name: "circuit", selector: { text: {} } },
-            {
-              name: "icon",
-              selector: { icon: {} },
-              context: { icon_entity: "entity" },
-            },
-            {
-              name: "unit",
-              selector: {
-                select: {
-                  mode: "dropdown",
-                  options: [
-                    { value: "auto", label: "Automatic" },
-                    { value: "W", label: "Watts (W)" },
-                    { value: "kW", label: "Kilowatts (kW)" },
-                    { value: "A", label: "Amperes (A)" },
-                  ],
-                },
+        (_, index) => {
+          const clampNumber = index + 1;
+          const clamp = this._editorClamp(config, clampNumber);
+          const friendlyName =
+            this._cleanText(clamp?.name) ||
+            this._friendlyEntityLabel(hass, this._cleanText(clamp?.entity));
+          return {
+            type: "expandable",
+            name: String(index),
+            title: friendlyName
+              ? `Clamp ${clampNumber} — ${friendlyName}`
+              : `Clamp ${clampNumber}`,
+            icon: "mdi:current-ac",
+            schema: [
+              {
+                name: "clamp",
+                type: "integer",
+                default: clampNumber,
+                disabled: true,
               },
-              default: "auto",
-            },
-            {
-              name: "poles",
-              selector: {
-                select: {
-                  mode: "dropdown",
-                  options: [
-                    { value: 1, label: "Single-pole" },
-                    { value: 2, label: "Double-pole" },
-                  ],
-                },
+              { name: "entity", selector: entitySelector },
+              { name: "name", selector: { text: {} } },
+              { name: "circuit", selector: { text: {} } },
+              {
+                name: "icon",
+                selector: { icon: {} },
+                context: { icon_entity: "entity" },
               },
-              default: 1,
-            },
-          ],
-        })
+              {
+                name: "unit",
+                selector: {
+                  select: {
+                    mode: "dropdown",
+                    options: [
+                      { value: "auto", label: "Automatic" },
+                      { value: "W", label: "Watts (W)" },
+                      { value: "kW", label: "Kilowatts (kW)" },
+                      { value: "A", label: "Amperes (A)" },
+                    ],
+                  },
+                },
+                default: "auto",
+              },
+              {
+                name: "poles",
+                selector: {
+                  select: {
+                    mode: "dropdown",
+                    options: [
+                      { value: 1, label: "Single-pole" },
+                      { value: 2, label: "Double-pole" },
+                    ],
+                  },
+                },
+                default: 1,
+              },
+            ],
+          };
+        }
       );
 
       const labels = {
+        device_id: "Home Assistant device",
         title: "Card title",
         name: "Display name",
         power_entity: "Total power entity",
@@ -419,40 +441,105 @@
         clamp: "SEM clamp number",
       };
 
+      const schema = [];
+      if (includeDevice) {
+        schema.push({
+          type: "expandable",
+          name: "",
+          title: "SEM Meter Device",
+          icon: "mdi:devices",
+          flatten: true,
+          schema: [{ name: "device_id", selector: { device: {} } }],
+        });
+      }
+      schema.push(
+        {
+          type: "expandable",
+          name: "",
+          title: "General",
+          icon: "mdi:view-dashboard-outline",
+          flatten: true,
+          schema: [{ name: "title", selector: { text: {} } }],
+        },
+        {
+          type: "expandable",
+          name: "main",
+          title: "Main Breaker",
+          icon: "mdi:electric-switch",
+          schema: [
+            { name: "name", selector: { text: {} } },
+            { name: "power_entity", selector: entitySelector },
+            { name: "current_entity", selector: entitySelector },
+            { name: "line_1_entity", selector: entitySelector },
+            { name: "line_2_entity", selector: entitySelector },
+          ],
+        },
+        {
+          type: "grid",
+          name: "clamps",
+          column_min_width: "100%",
+          schema: clampSections,
+        }
+      );
+
       return {
-        schema: [
-          {
-            type: "expandable",
-            name: "",
-            title: "General",
-            icon: "mdi:view-dashboard-outline",
-            flatten: true,
-            schema: [{ name: "title", selector: { text: {} } }],
-          },
-          {
-            type: "expandable",
-            name: "main",
-            title: "Main Breaker",
-            icon: "mdi:electric-switch",
-            schema: [
-              { name: "name", selector: { text: {} } },
-              { name: "power_entity", selector: entitySelector },
-              { name: "current_entity", selector: entitySelector },
-              { name: "line_1_entity", selector: entitySelector },
-              { name: "line_2_entity", selector: entitySelector },
-            ],
-          },
-          {
-            type: "grid",
-            name: "clamps",
-            column_min_width: "100%",
-            schema: clampSections,
-          },
-        ],
-        computeLabel: (schema) => labels[schema.name],
-        computeHelper: (schema) => {
+        schema,
+        computeLabel: (schema, _data, options) => {
+          const mainFields = {
+            power_entity: "Total power entity",
+            current_entity: "Total current entity",
+            line_1_entity: "Line 1 power entity",
+            line_2_entity: "Line 2 power entity",
+          };
+          if (mainFields[schema.name]) {
+            const entityId = this._cleanText(config?.main?.[schema.name]);
+            const friendly = this._friendlyEntityLabel(hass, entityId);
+            return friendly
+              ? `${mainFields[schema.name]} — ${friendly}`
+              : mainFields[schema.name];
+          }
+          if (schema.name === "entity") {
+            const path = options?.path || [];
+            const clampIndex = Number(path[path.length - 1]);
+            const clamp = Number.isInteger(clampIndex)
+              ? this._editorClamp(config, clampIndex + 1)
+              : null;
+            const friendly =
+              this._cleanText(clamp?.name) ||
+              this._friendlyEntityLabel(
+                hass,
+                this._cleanText(clamp?.entity)
+              );
+            return Number.isInteger(clampIndex) && friendly
+              ? `Clamp ${clampIndex + 1} — ${friendly}`
+              : labels.entity;
+          }
+          return labels[schema.name];
+        },
+        computeHelper: (schema, options) => {
+          if (schema.name === "device_id") {
+            return "Select the Home Assistant device that owns the SEM Meter sensor entities.";
+          }
+          if (
+            [
+              "power_entity",
+              "current_entity",
+              "line_1_entity",
+              "line_2_entity",
+            ].includes(schema.name)
+          ) {
+            return this._cleanText(config?.main?.[schema.name]) || undefined;
+          }
           if (schema.name === "clamps") {
             return "Configure up to the 16 physical SEM Meter clamps.";
+          }
+          if (schema.name === "entity") {
+            const path = options?.path || [];
+            const clampIndex = Number(path[path.length - 1]);
+            const clamp = Number.isInteger(clampIndex)
+              ? this._editorClamp(config, clampIndex + 1)
+              : null;
+            return this._cleanText(clamp?.entity) || undefined;
           }
           if (schema.name === "poles") {
             return "Visual metadata only; a double-pole row still uses one clamp.";
@@ -534,9 +621,33 @@
       return {
         type: CARD_TYPE,
         title: this._cleanText(config.title) || "Electrical Panel",
+        device_id: this._cleanText(config.device_id),
         main,
         clamps,
       };
+    }
+
+    static _editorClamp(config, clampNumber) {
+      if (!config || !config.clamps) {
+        return null;
+      }
+      const entries =
+        Array.isArray(config.clamps) ||
+        (config.clamps && typeof config.clamps === "object")
+          ? Object.entries(config.clamps)
+          : [];
+      for (const [index, clamp] of entries) {
+        if (!clamp || typeof clamp !== "object") {
+          continue;
+        }
+        const number = Number(
+          clamp.clamp === undefined ? Number(index) + 1 : clamp.clamp
+        );
+        if (number === clampNumber) {
+          return clamp;
+        }
+      }
+      return null;
     }
 
     static _cleanText(value) {
@@ -671,6 +782,354 @@
         };
       }
       return { label: "Unbalanced", percentage, level: "unbalanced" };
+    }
+
+    static _friendlyEntityLabel(hass, entityId) {
+      if (!entityId) {
+        return "";
+      }
+      const stateObject = hass?.states?.[entityId];
+      if (stateObject && typeof hass?.formatEntityName === "function") {
+        try {
+          const name = hass.formatEntityName(stateObject);
+          if (name) {
+            return String(name);
+          }
+        } catch (_error) {
+          // Fall through to stable state and entity-ID labels.
+        }
+      }
+      if (stateObject?.attributes?.friendly_name) {
+        return String(stateObject.attributes.friendly_name);
+      }
+      const objectId = String(entityId).split(".").pop();
+      return objectId
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, (character) => character.toUpperCase());
+    }
+
+    static _copyConfig(config) {
+      const copy = { ...(config || {}) };
+      copy.main = { ...(config?.main || {}) };
+      if (Array.isArray(config?.clamps)) {
+        copy.clamps = config.clamps.map((clamp) =>
+          clamp && typeof clamp === "object" ? { ...clamp } : clamp
+        );
+      } else if (config?.clamps && typeof config.clamps === "object") {
+        copy.clamps = Object.fromEntries(
+          Object.entries(config.clamps).map(([key, clamp]) => [
+            key,
+            clamp && typeof clamp === "object" ? { ...clamp } : clamp,
+          ])
+        );
+      } else {
+        copy.clamps = [];
+      }
+      return copy;
+    }
+
+    static _normalizeMatchText(value) {
+      return String(value || "")
+        .toLowerCase()
+        .replace(/^sensor[._\s-]+/, "")
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim();
+    }
+
+    static _matchStrength(text, pattern) {
+      if (!text || !pattern) {
+        return 0;
+      }
+      if (text === pattern) {
+        return 300;
+      }
+      if (text.endsWith(` ${pattern}`)) {
+        return 200;
+      }
+      if (` ${text} `.includes(` ${pattern} `)) {
+        return 100;
+      }
+      return 0;
+    }
+
+    static _importRoles() {
+      const roles = [
+        {
+          key: "main_power",
+          label: "Main power",
+          field: "power_entity",
+          patterns: ["main power", "total power", "total main power"],
+        },
+        {
+          key: "main_current",
+          label: "Main current",
+          field: "current_entity",
+          patterns: ["main current", "total current", "total main current"],
+        },
+        {
+          key: "line_1_power",
+          label: "Line 1 power",
+          field: "line_1_entity",
+          patterns: [
+            "line 1 power",
+            "l1 power",
+            "main phase a power",
+            "phase a power",
+          ],
+        },
+        {
+          key: "line_2_power",
+          label: "Line 2 power",
+          field: "line_2_entity",
+          patterns: [
+            "line 2 power",
+            "l2 power",
+            "main phase b power",
+            "phase b power",
+          ],
+        },
+      ];
+      for (let clamp = 1; clamp <= MAX_CLAMPS; clamp += 1) {
+        roles.push({
+          key: `clamp_${clamp}`,
+          label: `Clamp ${clamp}`,
+          clamp,
+          patterns: [
+            `clamp ${clamp} power`,
+            `ct ${clamp} power`,
+            `channel ${clamp} power`,
+            `circuit ${clamp} power`,
+          ],
+        });
+      }
+      return roles;
+    }
+
+    static _scoreRegistryEntry(entry, hass, role) {
+      const stateObject = hass?.states?.[entry.entity_id];
+      const sources = [
+        entry.original_name,
+        entry.unique_id,
+        stateObject?.attributes?.friendly_name,
+        entry.entity_id,
+      ];
+      let bestScore = 0;
+      for (let sourceIndex = 0; sourceIndex < sources.length; sourceIndex += 1) {
+        const normalized = this._normalizeMatchText(sources[sourceIndex]);
+        const sourceScore = (sources.length - sourceIndex) * 1000;
+        for (const rawPattern of role.patterns) {
+          const strength = this._matchStrength(
+            normalized,
+            this._normalizeMatchText(rawPattern)
+          );
+          if (strength > 0) {
+            bestScore = Math.max(bestScore, sourceScore + strength);
+          }
+        }
+      }
+      return bestScore;
+    }
+
+    static _matchRole(entries, hass, role) {
+      let candidates = entries
+        .map((entry) => ({
+          entry,
+          score: this._scoreRegistryEntry(entry, hass, role),
+        }))
+        .filter((candidate) => candidate.score > 0);
+
+      const enabled = candidates.filter(
+        ({ entry }) => entry.disabled_by === null || entry.disabled_by === undefined
+      );
+      if (enabled.length > 0) {
+        candidates = enabled;
+      }
+      const available = candidates.filter(({ entry }) => {
+        const state = hass?.states?.[entry.entity_id]?.state;
+        return (
+          state !== undefined &&
+          state !== null &&
+          state !== "unknown" &&
+          state !== "unavailable"
+        );
+      });
+      if (available.length > 0) {
+        candidates = available;
+      }
+      if (candidates.length === 0) {
+        return { match: null, ambiguous: [] };
+      }
+
+      candidates.sort(
+        (left, right) =>
+          right.score - left.score ||
+          left.entry.entity_id.localeCompare(right.entry.entity_id)
+      );
+      const strongest = candidates[0].score;
+      const tied = candidates.filter(
+        (candidate) => candidate.score === strongest
+      );
+      if (tied.length > 1) {
+        return {
+          match: null,
+          ambiguous: tied.map(({ entry }) => entry.entity_id),
+        };
+      }
+      return { match: candidates[0].entry, ambiguous: [] };
+    }
+
+    static _matchDeviceEntities(registryEntries, hass, deviceId) {
+      const entries = (Array.isArray(registryEntries) ? registryEntries : [])
+        .filter(
+          (entry) =>
+            entry &&
+            entry.device_id === deviceId &&
+            typeof entry.entity_id === "string" &&
+            entry.entity_id.startsWith("sensor.")
+        );
+      const results = {};
+      for (const role of this._importRoles()) {
+        results[role.key] = this._matchRole(entries, hass, role);
+      }
+      return results;
+    }
+
+    static _importedClampName(hass, entityId, clampNumber) {
+      let label = this._friendlyEntityLabel(hass, entityId).trim();
+      label = label.replace(/^.*?\bSEM\s+Meter\b\s*/i, "").trim();
+      const genericPattern = new RegExp(
+        `^(clamp|ct|channel|circuit)\\s+${clampNumber}\\s+power$`,
+        "i"
+      );
+      if (genericPattern.test(label)) {
+        return label.replace(/\s+power$/i, "").trim();
+      }
+      const withoutPower = label.replace(/\s+power$/i, "").trim();
+      return withoutPower.length >= 2 ? withoutPower : label;
+    }
+
+    static _configClampMap(config) {
+      const map = new Map();
+      const entries =
+        Array.isArray(config?.clamps) ||
+        (config?.clamps && typeof config.clamps === "object")
+          ? Object.entries(config.clamps)
+          : [];
+      for (const [index, clamp] of entries) {
+        if (!clamp || typeof clamp !== "object") {
+          continue;
+        }
+        const number = Number(
+          clamp.clamp === undefined ? Number(index) + 1 : clamp.clamp
+        );
+        if (
+          Number.isInteger(number) &&
+          number >= 1 &&
+          number <= MAX_CLAMPS &&
+          !map.has(number)
+        ) {
+          map.set(number, { ...clamp, clamp: number });
+        }
+      }
+      return map;
+    }
+
+    static _configForEditor(config) {
+      const editorConfig = this._copyConfig(config);
+      const clampMap = this._configClampMap(config);
+      editorConfig.clamps = Array.from(
+        { length: MAX_CLAMPS },
+        (_, index) => {
+          const clamp = index + 1;
+          return {
+            clamp,
+            entity: "",
+            name: "",
+            circuit: "",
+            icon: "",
+            unit: "auto",
+            poles: 1,
+            ...(clampMap.get(clamp) || {}),
+            clamp,
+          };
+        }
+      );
+      return editorConfig;
+    }
+
+    static _applyEntityImport(config, matches, mode, hass) {
+      const next = this._copyConfig(config);
+      const summary = {
+        imported: [],
+        notFound: [],
+        ambiguous: [],
+        preserved: [],
+      };
+      const roles = this._importRoles();
+      const main = { ...(next.main || {}) };
+      const clampMap = this._configClampMap(next);
+
+      for (const role of roles) {
+        const result = matches[role.key] || { match: null, ambiguous: [] };
+        if (result.ambiguous.length > 0) {
+          summary.ambiguous.push({
+            label: role.label,
+            entities: [...result.ambiguous],
+          });
+        } else if (!result.match) {
+          summary.notFound.push(role.label);
+        }
+
+        if (role.field) {
+          if (mode === IMPORT_FILL && this._cleanText(main[role.field])) {
+            summary.preserved.push(role.label);
+          } else if (result.match) {
+            main[role.field] = result.match.entity_id;
+            summary.imported.push(role.label);
+          } else if (mode === IMPORT_REPLACE) {
+            main[role.field] = "";
+          }
+          continue;
+        }
+
+        const existing = clampMap.get(role.clamp);
+        if (
+          mode === IMPORT_FILL &&
+          existing &&
+          this._cleanText(existing.entity)
+        ) {
+          summary.preserved.push(role.label);
+          continue;
+        }
+        if (result.match) {
+          if (existing) {
+            existing.entity = result.match.entity_id;
+          } else {
+            clampMap.set(role.clamp, {
+              clamp: role.clamp,
+              entity: result.match.entity_id,
+              name: this._importedClampName(
+                hass,
+                result.match.entity_id,
+                role.clamp
+              ),
+              circuit: "",
+              icon: "",
+              unit: "auto",
+              poles: 1,
+            });
+          }
+          summary.imported.push(role.label);
+        } else if (mode === IMPORT_REPLACE && existing) {
+          existing.entity = "";
+        }
+      }
+
+      next.main = main;
+      next.clamps = [...clampMap.values()].sort(
+        (left, right) => left.clamp - right.clamp
+      );
+      return { config: next, summary };
     }
 
     setConfig(config) {
@@ -964,6 +1423,440 @@
         })
       );
     }
+  }
+
+  class SemElectricPanelCardEditor extends HTMLElement {
+    constructor() {
+      super();
+      this.attachShadow({ mode: "open" });
+      this._config = null;
+      this._hass = null;
+      this._importMode = IMPORT_FILL;
+      this._replaceConfirmationPending = false;
+      this._importing = false;
+      this._summary = null;
+    }
+
+    setConfig(config) {
+      this._config = SemElectricPanelCard._copyConfig(config);
+      this._render();
+    }
+
+    set hass(hass) {
+      this._hass = hass;
+      if (!this.shadowRoot?.hasChildNodes() && this._config) {
+        this._render();
+        return;
+      }
+      for (const form of this.shadowRoot?.querySelectorAll("ha-form") || []) {
+        form.hass = hass;
+      }
+    }
+
+    get hass() {
+      return this._hass;
+    }
+
+    _emitConfig(config) {
+      this._config = SemElectricPanelCard._copyConfig(config);
+      this.dispatchEvent(
+        new CustomEvent("config-changed", {
+          bubbles: true,
+          composed: true,
+          detail: { config: this._config },
+        })
+      );
+    }
+
+    _handleFormChanged(event) {
+      event.stopPropagation();
+      const next = event.detail?.value;
+      if (!next || typeof next !== "object") {
+        return;
+      }
+      this._summary = null;
+      this._replaceConfirmationPending = false;
+      this._emitConfig(next);
+      this._updateImportControls();
+    }
+
+    _createForm(schema, data = this._config) {
+      const form = document.createElement("ha-form");
+      form.hass = this._hass;
+      form.data = data;
+      form.schema = schema.schema;
+      form.computeLabel = schema.computeLabel;
+      form.computeHelper = schema.computeHelper;
+      form.addEventListener("value-changed", (event) =>
+        this._handleFormChanged(event)
+      );
+      return form;
+    }
+
+    _updateImportControls() {
+      const importButton = this.shadowRoot?.querySelector("[data-import]");
+      if (importButton) {
+        importButton.disabled =
+          this._importing ||
+          !SemElectricPanelCard._cleanText(this._config?.device_id);
+        importButton.textContent = this._importing
+          ? "Importing…"
+          : "Import SEM Meter Entities";
+      }
+      const confirm = this.shadowRoot?.querySelector("[data-confirmation]");
+      if (confirm) {
+        confirm.hidden = !this._replaceConfirmationPending;
+      }
+    }
+
+    _setEditorMessage(message, type = "error") {
+      this._summary = {
+        error: message,
+        type,
+      };
+      this._render();
+    }
+
+    async _startImport() {
+      if (!SemElectricPanelCard._cleanText(this._config?.device_id)) {
+        this._setEditorMessage("Select a SEM Meter device before importing.");
+        return;
+      }
+      if (this._importMode === IMPORT_REPLACE) {
+        this._replaceConfirmationPending = true;
+        this._updateImportControls();
+        return;
+      }
+      await this._executeImport();
+    }
+
+    async _executeImport() {
+      if (
+        !this._hass ||
+        typeof this._hass.callWS !== "function" ||
+        this._importing
+      ) {
+        this._setEditorMessage(
+          "This Home Assistant version does not expose the entity registry to this editor. Manual entity selection remains available."
+        );
+        return;
+      }
+
+      this._replaceConfirmationPending = false;
+      this._importing = true;
+      this._summary = null;
+      this._updateImportControls();
+      const originalConfig = this._config;
+      try {
+        const response = await this._hass.callWS({
+          type: "config/entity_registry/list",
+        });
+        const registryEntries = Array.isArray(response)
+          ? response
+          : response?.entities;
+        if (!Array.isArray(registryEntries)) {
+          throw new Error("The entity registry returned an unsupported response.");
+        }
+        const matches = SemElectricPanelCard._matchDeviceEntities(
+          registryEntries,
+          this._hass,
+          this._config.device_id
+        );
+        const result = SemElectricPanelCard._applyEntityImport(
+          this._config,
+          matches,
+          this._importMode,
+          this._hass
+        );
+        this._summary = result.summary;
+        this._emitConfig(result.config);
+      } catch (error) {
+        this._config = originalConfig;
+        this._summary = {
+          error: `Entity import failed: ${
+            error instanceof Error ? error.message : String(error)
+          }. Existing assignments were not changed.`,
+          type: "error",
+        };
+      } finally {
+        this._importing = false;
+        this._render();
+      }
+    }
+
+    _appendSummary(container) {
+      if (!this._summary) {
+        return;
+      }
+      const box = document.createElement("div");
+      box.className = `summary ${this._summary.type || "success"}`;
+      box.setAttribute("role", this._summary.error ? "alert" : "status");
+
+      if (this._summary.error) {
+        box.textContent = this._summary.error;
+        container.append(box);
+        return;
+      }
+
+      const heading = document.createElement("strong");
+      heading.textContent = "Import result";
+      box.append(heading);
+      const groups = [
+        ["Imported", this._summary.imported],
+        ["Not found", this._summary.notFound],
+        [
+          "Ambiguous",
+          this._summary.ambiguous.map(
+            (item) =>
+              `${item.label}: ${item.entities.length} equally ranked entities (${item.entities.join(
+                ", "
+              )})`
+          ),
+        ],
+        ["Preserved existing", this._summary.preserved],
+      ];
+      for (const [label, items] of groups) {
+        if (!items || items.length === 0) {
+          continue;
+        }
+        const groupHeading = document.createElement("div");
+        groupHeading.className = "summary-heading";
+        groupHeading.textContent = `${label}:`;
+        const list = document.createElement("ul");
+        for (const item of items) {
+          const row = document.createElement("li");
+          row.textContent = item;
+          list.append(row);
+        }
+        box.append(groupHeading, list);
+      }
+      container.append(box);
+    }
+
+    _render() {
+      if (!this.shadowRoot || !this._config) {
+        return;
+      }
+
+      const style = document.createElement("style");
+      style.textContent = `
+        :host {
+          display: block;
+          color: var(--primary-text-color);
+        }
+        .device-section {
+          margin-bottom: 16px;
+          padding: 16px;
+          border: 1px solid var(--divider-color, #d5d5d5);
+          border-radius: var(--ha-border-radius-md, 12px);
+        }
+        h3 {
+          margin: 0 0 6px;
+          font-size: 1rem;
+          font-weight: 600;
+        }
+        .explanation, .compatibility {
+          margin: 0 0 16px;
+          color: var(--secondary-text-color);
+          font-size: 0.9rem;
+          line-height: 1.4;
+        }
+        .controls {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          align-items: end;
+          gap: 12px;
+          margin-top: 14px;
+        }
+        label {
+          display: grid;
+          gap: 5px;
+          color: var(--secondary-text-color);
+          font-size: 0.8rem;
+        }
+        select, button {
+          box-sizing: border-box;
+          min-height: 40px;
+          border: 1px solid var(--divider-color, #bdbdbd);
+          border-radius: 8px;
+          color: var(--primary-text-color);
+          background: var(--card-background-color, #fff);
+          font: inherit;
+        }
+        select {
+          width: 100%;
+          padding: 8px 10px;
+        }
+        button {
+          padding: 8px 14px;
+          cursor: pointer;
+          font-weight: 600;
+        }
+        button.primary {
+          border-color: var(--primary-color, #03a9f4);
+          color: var(--text-primary-color, #fff);
+          background: var(--primary-color, #03a9f4);
+        }
+        button:disabled {
+          cursor: default;
+          opacity: 0.5;
+        }
+        .confirmation {
+          margin-top: 12px;
+          padding: 12px;
+          border: 1px solid var(--warning-color, #ff9800);
+          border-radius: 8px;
+        }
+        .confirmation p {
+          margin: 0 0 10px;
+        }
+        .confirmation-actions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+        .summary {
+          margin-top: 14px;
+          padding: 12px;
+          border-left: 4px solid var(--primary-color, #03a9f4);
+          border-radius: 6px;
+          background: var(--secondary-background-color, #f5f5f5);
+          line-height: 1.4;
+        }
+        .summary.error {
+          border-left-color: var(--error-color, #db4437);
+        }
+        .summary-heading {
+          margin-top: 8px;
+          font-weight: 600;
+        }
+        .summary ul {
+          margin: 3px 0 0;
+          padding-left: 22px;
+        }
+        .manual-heading {
+          margin: 18px 0 10px;
+          color: var(--secondary-text-color);
+          font-size: 0.85rem;
+          font-weight: 600;
+          letter-spacing: 0.04em;
+          text-transform: uppercase;
+        }
+        @media (max-width: 520px) {
+          .controls {
+            grid-template-columns: 1fr;
+          }
+        }
+      `;
+
+      const deviceSection = document.createElement("section");
+      deviceSection.className = "device-section";
+      const heading = document.createElement("h3");
+      heading.textContent = "SEM Meter Device";
+      const explanation = document.createElement("p");
+      explanation.className = "explanation";
+      explanation.textContent =
+        "Select the Home Assistant device that owns the SEM Meter sensors, then import its Main and Clamp entity assignments.";
+      deviceSection.append(heading, explanation);
+
+      const deviceFormSchema = {
+        schema: [{ name: "device_id", selector: { device: {} } }],
+        computeLabel: () => "Home Assistant device",
+        computeHelper: () =>
+          "The normal card never requires registry access; this selection is used only by the editor import.",
+      };
+      deviceSection.append(this._createForm(deviceFormSchema));
+      if (!this._hass || typeof this._hass.callWS !== "function") {
+        const compatibility = document.createElement("p");
+        compatibility.className = "compatibility";
+        compatibility.textContent =
+          "Automatic registry import is not available in this Home Assistant version. Manual entity selection remains available.";
+        deviceSection.append(compatibility);
+      }
+
+      const controls = document.createElement("div");
+      controls.className = "controls";
+      const modeLabel = document.createElement("label");
+      modeLabel.textContent = "Import mode";
+      const mode = document.createElement("select");
+      mode.setAttribute("aria-label", "SEM Meter entity import mode");
+      for (const [value, label] of [
+        [IMPORT_FILL, "Fill Empty Fields"],
+        [IMPORT_REPLACE, "Replace Entity Assignments"],
+      ]) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        option.selected = this._importMode === value;
+        mode.append(option);
+      }
+      mode.addEventListener("change", () => {
+        this._importMode =
+          mode.value === IMPORT_REPLACE ? IMPORT_REPLACE : IMPORT_FILL;
+        this._replaceConfirmationPending = false;
+        this._updateImportControls();
+      });
+      modeLabel.append(mode);
+
+      const importButton = document.createElement("button");
+      importButton.type = "button";
+      importButton.className = "primary";
+      importButton.dataset.import = "";
+      importButton.textContent = "Import SEM Meter Entities";
+      importButton.addEventListener("click", () => this._startImport());
+      controls.append(modeLabel, importButton);
+      deviceSection.append(controls);
+
+      const confirmation = document.createElement("div");
+      confirmation.className = "confirmation";
+      confirmation.dataset.confirmation = "";
+      confirmation.hidden = !this._replaceConfirmationPending;
+      const confirmationText = document.createElement("p");
+      confirmationText.textContent =
+        "Replace all Main and Clamp entity assignments with the detected entities? Custom names, circuit labels, icons, units, and pole counts will be preserved.";
+      const confirmationActions = document.createElement("div");
+      confirmationActions.className = "confirmation-actions";
+      const confirmButton = document.createElement("button");
+      confirmButton.type = "button";
+      confirmButton.className = "primary";
+      confirmButton.textContent = "Confirm Replace";
+      confirmButton.addEventListener("click", () => this._executeImport());
+      const cancelButton = document.createElement("button");
+      cancelButton.type = "button";
+      cancelButton.textContent = "Cancel";
+      cancelButton.addEventListener("click", () => {
+        this._replaceConfirmationPending = false;
+        this._updateImportControls();
+      });
+      confirmationActions.append(confirmButton, cancelButton);
+      confirmation.append(confirmationText, confirmationActions);
+      deviceSection.append(confirmation);
+      this._appendSummary(deviceSection);
+
+      const manualHeading = document.createElement("div");
+      manualHeading.className = "manual-heading";
+      manualHeading.textContent = "Panel configuration";
+      const editorFormSchema = SemElectricPanelCard._buildConfigForm(
+        this._config,
+        this._hass,
+        false
+      );
+      const editorForm = this._createForm(
+        editorFormSchema,
+        SemElectricPanelCard._configForEditor(this._config)
+      );
+      this.shadowRoot.replaceChildren(
+        style,
+        deviceSection,
+        manualHeading,
+        editorForm
+      );
+      this._updateImportControls();
+    }
+  }
+
+  if (!customElements.get(EDITOR_TAG)) {
+    customElements.define(EDITOR_TAG, SemElectricPanelCardEditor);
   }
 
   if (!customElements.get(CARD_TAG)) {

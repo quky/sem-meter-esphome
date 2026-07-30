@@ -2,6 +2,8 @@
 # All entity IDs below are intentionally fake. Replace them with real sensors.
 type: custom:sem-electric-panel-card
 title: Example Electrical Panel
+# Optional; select this through the graphical editor for automatic import:
+# device_id: replace_with_home_assistant_device_id
 
 main:
   name: Main Breaker

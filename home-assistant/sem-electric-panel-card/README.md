@@ -52,23 +52,69 @@ After registering the resource:
 1. Edit a dashboard.
 2. Select **Add card**.
 3. Find **SEM Electric Panel** in the card picker.
-4. Configure the General and Main Breaker sections.
-5. Expand any of the 16 fixed Clamp sections and select its sensor.
+4. In **SEM Meter Device**, select the Home Assistant device that owns the
+   ESPHome SEM Meter entities.
+5. Choose an import mode and select **Import SEM Meter Entities**, or configure
+   the entities manually.
+6. Configure the General and Main Breaker sections.
+7. Expand any of the 16 fixed Clamp sections to review or edit its sensor.
 
 Entity fields use Home Assistant's sensor entity selector. A clamp with an
 empty entity does not render as an active breaker row. The editor always shows
 exactly Clamp 1 through Clamp 16 because those numbers correspond to physical
 SEM Meter inputs.
 
+Configured clamp sections show a friendly heading such as **Clamp 7 — Pool
+Pump**. Home Assistant's entity selector continues to show the underlying
+entity, and the raw entity ID is retained as secondary editor information
+where the frontend supports it.
+
 The built-in Home Assistant form stores the clamps as fixed indexed entries.
 The runtime also accepts the concise YAML list shown below and in
 [`example-dashboard.yaml`](example-dashboard.yaml).
+
+## Import entities from a SEM Meter device
+
+Device import is optional and editor-only. The rendered card never queries the
+entity registry. The importer asks Home Assistant for sensor entities that
+belong to the selected `device_id`, then matches Main power, Main current, Line
+1, Line 2, and Clamp 1 through Clamp 16 using registry and state metadata.
+
+The importer recognizes common forms such as `Main Power`, `Total Power`,
+`Line 1 Power`, `L1 Power`, `Clamp 7 Power`, `CT 7 Power`, `Channel 7 Power`,
+and `Circuit 7 Power`. It also recognizes SEM Meter Phase A and Phase B power
+as Line 1 and Line 2. Matching is case-insensitive and treats spaces,
+underscores, and hyphens consistently.
+
+Two modes are available:
+
+- **Fill Empty Fields** fills only empty Main entity fields and clamps with no
+  assigned entity. Existing entity assignments and all clamp metadata remain
+  unchanged.
+- **Replace Entity Assignments** replaces Main and Clamp entity assignments
+  after an explicit inline confirmation. Existing custom names, circuit
+  labels, icons, units, and pole counts are preserved.
+
+When the importer creates a missing clamp entry, it uses safe defaults and a
+friendly display name derived from the entity. A trailing `Power` and a
+recognizable SEM Meter device prefix are removed only for the card's display
+name; the Home Assistant entity itself is never renamed.
+
+After each attempt, the editor displays an inline summary of imported,
+not-found, ambiguous, and preserved assignments. Equally ranked candidates
+are reported as ambiguous and are not assigned automatically. If the registry
+request fails, the existing configuration remains unchanged.
+
+Manual entity selection remains fully supported. It is also the fallback for
+older Home Assistant versions that do not provide the expected registry API.
 
 ## YAML example
 
 ```yaml
 type: custom:sem-electric-panel-card
 title: Electrical Panel
+# Optional; normally selected through the graphical editor:
+# device_id: replace_with_home_assistant_device_id
 
 main:
   name: Main Breaker
@@ -102,6 +148,7 @@ clamps:
 | Field | Purpose | Default |
 | --- | --- | --- |
 | `title` | Card heading | `Electrical Panel` |
+| `device_id` | Optional Home Assistant device used by editor import | Empty |
 | `main` | Main Breaker configuration | Empty main section |
 | `clamps` | List or indexed collection of clamp configurations | Empty |
 
@@ -184,10 +231,29 @@ Double-pole rows include a 2-pole tooltip and accessible label.
 - Reopen the graphical editor if an entity was renamed or removed.
 - Ensure the dashboard user can access the entity.
 
+### Device import does not detect an entity
+
+- Confirm the selected Home Assistant device is the device that owns the
+  sensor entity in **Settings → Devices & services → Devices**.
+- Confirm the entity is in the `sensor` domain.
+- Check the inline **Not found** and **Ambiguous** results. Ambiguous roles
+  must be assigned manually.
+- Enabled and currently available candidates are preferred over disabled or
+  unavailable candidates.
+- Entity names must identify a supported Main, Line, Clamp, CT, Channel, or
+  Circuit role. Custom names that remove all clamp-number metadata may require
+  manual selection.
+- If the editor reports registry incompatibility or a request failure, use the
+  existing manual entity selectors. No current assignments are changed by a
+  failed request.
+
 ## Version 1 limitations
 
 Version 1 is experimental and requires manual Home Assistant testing. It does
 not provide HACS packaging, automatic SEM Meter discovery, energy history,
 breaker control, service calls, warning thresholds, custom colors, diagnostics
 dashboards, Telegram, MQTT-specific behavior, or support for more than 16
-clamps.
+clamps. The editor and rendered panel remain intentionally limited to exactly
+16 physical clamp positions. Device import is metadata-based and may require
+manual correction when integrations or user-renamed entities do not retain
+recognizable role names.
