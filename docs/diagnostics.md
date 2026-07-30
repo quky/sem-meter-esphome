@@ -594,7 +594,7 @@ Healthy / Unhealthy
 Home Assistant
 Online / Offline
 
-Self-Test
+Last Self-Test
 PASS / FAIL / NOT_RUN
 
 Parser Faults
@@ -624,6 +624,12 @@ None
 Unavailable values are `UNKNOWN`; fields are never blank. Firmware
 intentionally omits a timestamp. Home Assistant records state-change times and
 can add a delivery timestamp.
+
+`Parser`, `WiFi`, and `Home Assistant` describe current health. `Last
+Self-Test` is historical and reports the most recently completed result, or
+`NOT_RUN` when no self-test has completed since boot. A report requested while
+a self-test is actively `RUNNING` uses `UNKNOWN` because no new final result is
+available yet.
 
 If any diagnostic entity is disabled in Home Assistant, open **Settings →
 Devices & services → ESPHome → SEM Meter**, select the entity, open its

@@ -111,7 +111,7 @@ class SEMMeterDiagnosticReportGenerator {
         report, "Home Assistant",
         diagnostic_online_to_string(snapshot.home_assistant_state_known,
                                     snapshot.home_assistant_online));
-    append_field_(report, "Self-Test",
+    append_field_(report, "Last Self-Test",
                   diagnostic_self_test_to_string(snapshot.self_test_status));
     append_field_(report, "Parser Faults",
                   std::to_string(snapshot.counters.parser_fault_count));

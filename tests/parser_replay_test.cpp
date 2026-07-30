@@ -1804,7 +1804,7 @@ void test_diagnostic_report_states_and_format() {
        "Hardware Profile\nESP32-S3 / UART RX GPIO39 / Buzzer GPIO41",
        "Board Variant\nQUKY_GPIO41", "Reset Reason\nPOWER_ON",
        "Parser\nHealthy", "WiFi\nHealthy", "Home Assistant\nOnline",
-       "Self-Test\nPASS", "Parser Faults\n2", "WiFi Faults\n3",
+       "Last Self-Test\nPASS", "Parser Faults\n2", "WiFi Faults\n3",
        "Self-Test Runs\n4", "Self-Test Failures\n1",
        "Last Parser Outage\n12 seconds",
        "Last WiFi Outage\n125 seconds",
@@ -1832,12 +1832,12 @@ void test_diagnostic_report_states_and_format() {
   snapshot.self_test_status = SelfTestStatus::FAIL;
   expect_true(SEMMeterDiagnosticReportGenerator::build_diagnostic_report(
                   snapshot)
-                      .find("Self-Test\nFAIL") != std::string::npos,
+                      .find("Last Self-Test\nFAIL") != std::string::npos,
               "self-test FAIL report state is incorrect");
   snapshot.self_test_status = SelfTestStatus::NOT_RUN;
   expect_true(SEMMeterDiagnosticReportGenerator::build_diagnostic_report(
                   snapshot)
-                      .find("Self-Test\nNOT_RUN") != std::string::npos,
+                      .find("Last Self-Test\nNOT_RUN") != std::string::npos,
               "self-test NOT_RUN report state is incorrect");
   std::cout << "[PASS] diagnostic reports cover healthy, unhealthy, offline, PASS, FAIL, and NOT_RUN states\n";
 }
@@ -1866,7 +1866,7 @@ void test_diagnostic_report_unknowns_and_side_effects() {
                   report.find("WiFi\nUNKNOWN") != std::string::npos &&
                   report.find("Home Assistant\nUNKNOWN") !=
                       std::string::npos &&
-                  report.find("Self-Test\nUNKNOWN") != std::string::npos &&
+                  report.find("Last Self-Test\nUNKNOWN") != std::string::npos &&
                   report.find("Last Parser Outage\nUNKNOWN") !=
                       std::string::npos &&
                   report.find("Last WiFi Outage\nUNKNOWN") !=
@@ -1919,7 +1919,7 @@ void test_diagnostic_report_transport_and_duplicate_guard() {
       "ESPHome Version",        "Hardware Profile",
       "Board Variant",          "Reset Reason",
       "Parser",                 "WiFi",
-      "Home Assistant",         "Self-Test",
+      "Home Assistant",         "Last Self-Test",
       "Parser Faults",          "WiFi Faults",
       "Self-Test Runs",         "Self-Test Failures",
       "Last Parser Outage",     "Last WiFi Outage",
