@@ -1800,7 +1800,8 @@ void test_diagnostic_report_states_and_format() {
   expect_ordered(
       healthy,
       {"SEM Meter Diagnostic Report", "Report Format\n1",
-       "Component Version\n4.0.0-dev", "ESPHome Version\n2026.7.0",
+       std::string("Component Version\n") + SEM_METER_COMPONENT_VERSION,
+       "ESPHome Version\n2026.7.0",
        "Hardware Profile\nESP32-S3 / UART RX GPIO39 / Buzzer GPIO41",
        "Board Variant\nQUKY_GPIO41", "Reset Reason\nPOWER_ON",
        "Parser\nHealthy", "WiFi\nHealthy", "Home Assistant\nOnline",
