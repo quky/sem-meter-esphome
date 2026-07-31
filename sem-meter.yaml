@@ -40,6 +40,25 @@ substitutions:
 esphome:
   name: sem-meter
   friendly_name: SEM Meter
+  on_boot:
+    - priority: -100
+      then:
+        - component.update: sem_clamp_1_source
+        - component.update: sem_clamp_2_source
+        - component.update: sem_clamp_3_source
+        - component.update: sem_clamp_4_source
+        - component.update: sem_clamp_5_source
+        - component.update: sem_clamp_6_source
+        - component.update: sem_clamp_7_source
+        - component.update: sem_clamp_8_source
+        - component.update: sem_clamp_9_source
+        - component.update: sem_clamp_10_source
+        - component.update: sem_clamp_11_source
+        - component.update: sem_clamp_12_source
+        - component.update: sem_clamp_13_source
+        - component.update: sem_clamp_14_source
+        - component.update: sem_clamp_15_source
+        - component.update: sem_clamp_16_source
 
 external_components:
   - source:
@@ -164,6 +183,107 @@ text_sensor:
       name: "Connected SSID"
     mac_address:
       name: "MAC Address"
+
+  # These entities provide stable Clamp 1-16 identity to Home Assistant.
+  # Each state identifies the matching ESPHome power sensor original name.
+  # Existing power entities intentionally retain user-configured names for
+  # backward compatibility.
+  - platform: template
+    name: "SEM Clamp 1 Source"
+    id: sem_clamp_1_source
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return {"${circuit_1_name} Power"};
+  - platform: template
+    name: "SEM Clamp 2 Source"
+    id: sem_clamp_2_source
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return {"${circuit_2_name} Power"};
+  - platform: template
+    name: "SEM Clamp 3 Source"
+    id: sem_clamp_3_source
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return {"${circuit_3_name} Power"};
+  - platform: template
+    name: "SEM Clamp 4 Source"
+    id: sem_clamp_4_source
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return {"${circuit_4_name} Power"};
+  - platform: template
+    name: "SEM Clamp 5 Source"
+    id: sem_clamp_5_source
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return {"${circuit_5_name} Power"};
+  - platform: template
+    name: "SEM Clamp 6 Source"
+    id: sem_clamp_6_source
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return {"${circuit_6_name} Power"};
+  - platform: template
+    name: "SEM Clamp 7 Source"
+    id: sem_clamp_7_source
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return {"${circuit_7_name} Power"};
+  - platform: template
+    name: "SEM Clamp 8 Source"
+    id: sem_clamp_8_source
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return {"${circuit_8_name} Power"};
+  - platform: template
+    name: "SEM Clamp 9 Source"
+    id: sem_clamp_9_source
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return {"${circuit_9_name} Power"};
+  - platform: template
+    name: "SEM Clamp 10 Source"
+    id: sem_clamp_10_source
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return {"${circuit_10_name} Power"};
+  - platform: template
+    name: "SEM Clamp 11 Source"
+    id: sem_clamp_11_source
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return {"${circuit_11_name} Power"};
+  - platform: template
+    name: "SEM Clamp 12 Source"
+    id: sem_clamp_12_source
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return {"${circuit_12_name} Power"};
+  - platform: template
+    name: "SEM Clamp 13 Source"
+    id: sem_clamp_13_source
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return {"${circuit_13_name} Power"};
+  - platform: template
+    name: "SEM Clamp 14 Source"
+    id: sem_clamp_14_source
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return {"${circuit_14_name} Power"};
+  - platform: template
+    name: "SEM Clamp 15 Source"
+    id: sem_clamp_15_source
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return {"${circuit_15_name} Power"};
+  - platform: template
+    name: "SEM Clamp 16 Source"
+    id: sem_clamp_16_source
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return {"${circuit_16_name} Power"};
 
 binary_sensor:
   - platform: status

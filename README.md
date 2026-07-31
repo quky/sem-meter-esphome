@@ -12,6 +12,26 @@ UART accumulation, record decoding, diagnostics, and reliability-state
 tracking without blocking ESPHome's Wi-Fi, API, OTA, web server, or watchdog
 tasks.
 
+## Home Assistant Electric Panel Card
+
+The repository includes a standalone Home Assistant card that presents the
+SEM Meter as a realistic electrical load center. It supports selectable 8–42
+position panels, up to 16 SEM Meter clamps, independent physical circuit
+placement, single-pole, two-pole, and tandem breakers, device-aware entity
+selection, Auto Import, breaker ratings, empty slots, and configurable display
+formatting.
+
+<p align="center">
+  <img
+    src="home-assistant/sem-electric-panel-card/images/sem-electric-panel-card.png"
+    alt="SEM Electric Panel Card showing a realistic 24-position Home Assistant electrical panel"
+    width="520"
+  >
+</p>
+
+See the [SEM Electric Panel Card documentation](home-assistant/sem-electric-panel-card/README.md)
+for installation, visual-editor, and YAML configuration instructions.
+
 ## Features
 
 - Sixteen named branch-circuit power sensors

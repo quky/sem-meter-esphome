@@ -1,9 +1,13 @@
 # SEM Electric Panel Card example.
-# All entity IDs below are intentionally fake. Replace them with real sensors.
+# Every device and entity ID below is intentionally fictional.
 type: custom:sem-electric-panel-card
 title: Example Electrical Panel
-# Optional; select this through the graphical editor for automatic import:
-# device_id: replace_with_home_assistant_device_id
+device_id: replace_with_sem_meter_device_id
+panel_size: 24
+show_empty_positions: true
+numbering_style: circuit
+measurement_decimals: 1
+energy_decimals: 2
 
 main:
   name: Main Breaker
@@ -13,131 +17,56 @@ main:
   line_2_entity: sensor.example_sem_line_2_power
 
 clamps:
-  # Odd clamps render on the left; even clamps render on the right.
   - clamp: 1
     entity: sensor.example_sem_clamp_01_power
     name: Kitchen Receptacles
     circuit: "1"
     icon: mdi:countertop
     unit: W
-    poles: 1
+    breaker_type: single
+    breaker_rating: 20
 
-  - clamp: 2
-    entity: sensor.example_sem_clamp_02_current
-    name: Refrigerator
-    circuit: "2"
-    icon: mdi:fridge-outline
-    unit: A
-    poles: 1
-
-  - clamp: 3
-    entity: sensor.example_sem_clamp_03_power
-    name: Laundry
-    circuit: "3"
-    icon: mdi:washing-machine
-    unit: auto
-    poles: 1
-
+  # Clamp 4 remains measurement channel 4 while rendering at positions 13–15.
   - clamp: 4
     entity: sensor.example_sem_clamp_04_power
-    name: Water Heater
-    circuit: "4-6"
-    icon: mdi:water-boiler
-    unit: kW
-    poles: 2
-
-  - clamp: 5
-    entity: sensor.example_sem_clamp_05_power
-    name: Bedroom Outlets
-    circuit: "5"
-    icon: mdi:power-socket-us
-    unit: W
-    poles: 1
-
-  - clamp: 6
-    entity: sensor.example_sem_clamp_06_power
-    name: Range
-    circuit: "6-8"
-    icon: mdi:stove
-    unit: auto
-    poles: 2
-
-  - clamp: 7
-    entity: sensor.example_sem_clamp_07_current
-    name: Garage
-    circuit: "7"
-    icon: mdi:garage
-    unit: A
-    poles: 1
-
-  - clamp: 8
-    entity: sensor.example_sem_clamp_08_power
     name: Air Conditioner
-    circuit: "8-10"
+    circuit: "13-15"
+    circuit_position: 13
     icon: mdi:air-conditioner
     unit: W
-    poles: 2
+    breaker_type: double
+    breaker_rating: 30
 
-  - clamp: 9
-    entity: sensor.example_sem_clamp_09_power
-    name: Lighting
-    circuit: "9"
-    icon: mdi:lightbulb-group-outline
+# Manual physical positions do not add SEM Meter clamp channels.
+panel_positions:
+  - position: 17
+    entity: sensor.example_garage_lights_power
+    name: Garage Lights
+    circuit: "17"
+    icon: mdi:lightbulb
     unit: auto
-    poles: 1
+    breaker_type: single
+    breaker_rating: 15
 
-  - clamp: 10
-    entity: sensor.example_sem_clamp_10_power
-    name: Pool Pump
-    circuit: "10-12"
-    icon: mdi:pool
-    unit: kW
-    poles: 2
-
-  - clamp: 11
-    entity: sensor.example_sem_clamp_11_power
-    name: Office
-    circuit: "11"
-    icon: mdi:desk
+  # A two-pole breaker starting at Position 19 consumes Position 21 visually.
+  - position: 19
+    entity: sensor.example_water_heater_power
+    name: Water Heater
+    circuit: "19-21"
+    icon: mdi:water-boiler
     unit: W
-    poles: 1
+    breaker_type: double
+    breaker_rating: 30
 
-  - clamp: 12
-    entity: sensor.example_sem_clamp_12_current
-    name: Dishwasher
-    circuit: "12"
-    icon: mdi:dishwasher
-    unit: A
-    poles: 1
-
-  - clamp: 13
-    entity: sensor.example_sem_clamp_13_power
-    name: Workshop
-    circuit: "13"
-    icon: mdi:tools
-    unit: auto
-    poles: 1
-
-  - clamp: 14
-    entity: sensor.example_sem_clamp_14_power
-    name: EV Charger
-    circuit: "14-16"
-    icon: mdi:ev-station
-    unit: kW
-    poles: 2
-
-  - clamp: 15
-    entity: sensor.example_sem_clamp_15_power
-    name: Outdoor Receptacles
-    circuit: "15"
-    icon: mdi:outdoor-lamp
-    unit: W
-    poles: 1
-
-  - clamp: 16
-    entity: sensor.example_sem_clamp_16_power
-    name: Heat Pump
-    circuit: "16-18"
-    icon: mdi:heat-pump-outline
-    unit: auto
-    poles: 2
+  # A tandem uses one position and two independent entities/click targets.
+  - position: 23
+    entity: sensor.example_workshop_upper_power
+    name: Workshop Upper
+    circuit: "23A/B"
+    breaker_type: tandem
+    breaker_rating: 15
+    tandem_entity: sensor.example_workshop_lower_power
+    tandem_name: Workshop Lower
+    tandem_icon: mdi:power-socket-us
+    tandem_unit: W
+    tandem_breaker_rating: 20
